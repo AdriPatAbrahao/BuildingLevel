@@ -141,8 +141,8 @@ class BuildingOptimizer:
             num_valid_samples = len(feature_vectors) # Get actual number generated
 
             # 4. Split data into training and testing sets
-            train_features, train_outputs, test_features, test_outputs = self._split_data(
-                feature_vectors, output_values
+            train_features, test_features, train_outputs, test_outputs = self.train_test_split(
+            feature_vectors, output_values, train_size=self.train_split_ratio, shuffle=True, random_state=42
             )
 
             # 5. Train the Neural Network model
@@ -547,10 +547,13 @@ class BuildingOptimizer:
             tqs_output_file = BuildingConfig.RESULTS_PATH
             print(f"      Step 4: Extracting results from {tqs_output_file}...")
             # Optional delay: If RunModel is async, TQS might need time to write the file.
-            time.sleep(2) # Adjust delay as needed, or make RunModel synchronous if possible
-            if not tqs_output_file.exists():
-                 print(f"      TQS Error: Output file '{tqs_output_file}' not found. TQS analysis might have failed or not completed.")
-                 return None, None
+            timeout = 10  # seconds
+            start = time.time()
+            while not tqs_output_file.exists():
+                if time.time() - start > timeout:
+                    print("Timeout waiting for TQS output file.")
+                    return None, None
+                time.sleep(0.2)
 
             steel_value_str, concrete_value_str = extract_material_summary(tqs_output_file)
 

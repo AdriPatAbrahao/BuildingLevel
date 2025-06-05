@@ -240,12 +240,7 @@ class TQSModelManager:
 
             TQSUtil.writef(f"--- TQSModelManager: Full Building Model Creation for '{self.building_name}' Successful ---")
             return True
-
-        except Exception as e:
-            TQSUtil.writef(f"Manager Error: Unhandled exception in create_building_model_and_elements: {e}")
-            TQSUtil.writef(traceback.format_exc())
-            return False
-            
+           
         except Exception as e:
             TQSUtil.writef(f"Error creating building model: {str(e)}")
             return False

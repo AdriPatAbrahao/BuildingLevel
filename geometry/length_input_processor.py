@@ -1,5 +1,5 @@
 from typing import List, Tuple, Dict, Set
-import csv
+import pandas as pd
 from shapely.geometry import LineString, Polygon
 from config.constants import BEAM_THICKNESS, VECTOR_CSV_PATH
 from config.vector_config import VectorConfig
@@ -14,22 +14,23 @@ class LengthProcessor:
         
     def read_length_from_csv(self) -> List[dict]:
         """Reads column vectors from CSV and converts to segments"""
+        df = pd.read_csv(VECTOR_CSV_PATH, delimiter=';')
         segments = []
-        with open(VECTOR_CSV_PATH, 'r', encoding='utf-8-sig') as csvfile:
-            reader = csv.DictReader(csvfile, delimiter=';')
-            for row in reader:
-                x = float(row["x"])
-                y = float(row["y"])
-                dx = float(row["dx"])
-                dy = float(row["dy"])
-                length = float(row["length"])
-                
-                segments.append({
-                    "start": (x, y),
-                    "end": (x + dx * length, y + dy * length),
-                    "length": length,
-                    "binary": 1  # Columns are always active
-                })
+        for _, row in df.iterrows():
+            x = float(row["x"])
+            y = float(row["y"])
+            dx = float(row["dx"])
+            dy = float(row["dy"])
+            length = float(row["length"])
+            maxlength = float(row["maxlength"]) if "maxlength" in row and not pd.isna(row["maxlength"]) else None
+
+            segments.append({
+                "start": (x, y),
+                "end": (x + dx * length, y + dy * length),
+                "length": length,
+                "maxlength": maxlength,
+                "binary": 1
+            })
         return segments
     
     def process_segments(self, segments: List[dict] = None) -> Tuple[List[Polygon], List[dict]]:
@@ -130,42 +131,36 @@ class LengthProcessor:
         return beam_groups
 
     def generate_variation(self, segments: List[dict]) -> List[dict]:
-        """Generate more diverse variations of segment configurations"""
         new_segments = copy.deepcopy(segments)
-        
-        # Track changes to ensure at least one segment is modified
         made_changes = False
         max_attempts = 10
         attempt = 0
-        
+    
         while not made_changes and attempt < max_attempts:
             for segment in new_segments:
-                if random.random() < 0.4:  # 40% chance to modify
-                    original_length = segment["length"]
-                    
-                    # Generate larger variations
-                    variation = random.uniform(-200.0, 200.0)  # Increased range
-                    
-                    # Apply change while respecting structural limits
-                    new_length = max(200.0,  # Minimum viable column length
-                                   min(1000.0,  # Maximum practical length
-                                       original_length + variation))
-                    
-                    # Only update if change is significant
-                    if abs(new_length - original_length) > 50.0:  # Minimum meaningful change
+                original_length = segment["length"]
+                max_length = segment.get("maxlength")
+                
+                # Só varia se existe maxlength e é maior que o original
+                if max_length is not None and max_length > original_length:
+                    if random.random() < 0.4:  # 40% chance de variar
+                        variation = random.uniform(0, max_length - original_length)
+                        new_length = original_length + variation
                         self._update_segment_length(segment, new_length)
                         made_changes = True
-            
+    
             attempt += 1
-        
+    
         if not made_changes:
-            # Force at least one change if no variations were made
-            segment = random.choice(new_segments)
-            new_length = segment["length"] + random.choice([-100.0, 100.0])
-            new_length = max(200.0, min(1000.0, new_length))
-            self._update_segment_length(segment, new_length)
-        
-        
+            # Se nenhum segmento foi alterado, força pelo menos um
+            valid_segments = [s for s in new_segments if s.get("maxlength") is not None and s["maxlength"] > s["length"]]
+            if valid_segments:
+                segment = random.choice(valid_segments)
+                original_length = segment["length"]
+                max_length = segment["maxlength"]
+                new_length = original_length + random.uniform(0, max_length - original_length)
+                self._update_segment_length(segment, new_length)
+    
         return new_segments
 
     def _update_segment_length(self, segment: dict, new_length: float):

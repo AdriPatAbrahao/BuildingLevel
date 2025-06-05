@@ -21,7 +21,7 @@ class BinaryProcessor: # Renomeado de SegmentProcessor para BinaryProcessor
         self.element_thickness = BEAM_THICKNESS
         # print(f"BinaryProcessor initialized with element_thickness: {self.element_thickness} cm")
 
-    def read_binary_segments_from_csv(self, csv_file_path: str = CSV_PATH) -> List[Dict]:
+    def read_binary_from_csv(self, csv_file_path: str = CSV_PATH) -> List[Dict]:
         """
         Reads segments from a CSV file specific to the binary grid format.
         CSV should have columns: x1, y1, x2, y2, binary_flag (ou 'binario').
