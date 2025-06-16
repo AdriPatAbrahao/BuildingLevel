@@ -18,6 +18,7 @@ Date: March 2025
 import copy
 import time # Added for potential delays and timing
 from typing import List, Tuple, Optional, Dict
+from sklearn.model_selection import train_test_split
 # import numpy as np # Uncomment if needed for advanced splitting or direct normalization here
 
 # Third-party imports
@@ -141,7 +142,7 @@ class BuildingOptimizer:
             num_valid_samples = len(feature_vectors) # Get actual number generated
 
             # 4. Split data into training and testing sets
-            train_features, test_features, train_outputs, test_outputs = self.train_test_split(
+            train_features, test_features, train_outputs, test_outputs = train_test_split(
             feature_vectors, output_values, train_size=self.train_split_ratio, shuffle=True, random_state=42
             )
 

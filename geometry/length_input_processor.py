@@ -135,6 +135,7 @@ class LengthProcessor:
         made_changes = False
         max_attempts = 10
         attempt = 0
+        step = 0.05  # Variação em múltiplos de 5 cm (0.05 metros)
     
         while not made_changes and attempt < max_attempts:
             for segment in new_segments:
@@ -144,11 +145,15 @@ class LengthProcessor:
                 # Só varia se existe maxlength e é maior que o original
                 if max_length is not None and max_length > original_length:
                     if random.random() < 0.4:  # 40% chance de variar
-                        variation = random.uniform(0, max_length - original_length)
-                        new_length = original_length + variation
-                        self._update_segment_length(segment, new_length)
-                        made_changes = True
-    
+                        variation = max_length - original_length
+                        max_steps = int(variation / step)
+
+                        if max_steps > 0:
+                            num_steps = random.randint(1, max_steps)
+                            new_length = original_length + (num_steps * step)
+                        
+                            self._update_segment_length(segment, new_length)
+                            made_changes = True    
             attempt += 1
     
         if not made_changes:
@@ -158,8 +163,15 @@ class LengthProcessor:
                 segment = random.choice(valid_segments)
                 original_length = segment["length"]
                 max_length = segment["maxlength"]
-                new_length = original_length + random.uniform(0, max_length - original_length)
-                self._update_segment_length(segment, new_length)
+
+                max_variation = max_length - original_length
+                max_steps = int(max_variation / step)
+
+                if max_steps > 0:
+                    num_steps = random.randint(1, max_steps)
+                    new_length = original_length + (num_steps * step)
+                
+                    self._update_segment_length(segment, new_length)
     
         return new_segments
 
