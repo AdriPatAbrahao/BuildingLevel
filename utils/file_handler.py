@@ -1,7 +1,22 @@
 import csv
+import locale
 from config.constants import  CSV_FINAL_PATH
 from typing import List, Dict
+from contextlib import contextmanager
 
+@contextmanager
+def use_decimal_point():
+    """
+    Contexto temporário que força o uso de ponto como separador decimal,
+    independente das configurações regionais do sistema.
+    """    
+    old_locale = locale.getlocale()
+    try:
+        # Configura para usar o formato brasileiro (vírgula como separador decimal)
+        locale.setlocale(locale.LC_NUMERIC, 'pt_BR.UTF-8')
+        yield
+    finally:
+        locale.setlocale(locale.LC_NUMERIC, old_locale)
 
 def save_final_vectors_to_csv(configurations: List[List[Dict]]):
     """
@@ -9,8 +24,7 @@ def save_final_vectors_to_csv(configurations: List[List[Dict]]):
 
     Args:
         configurations (List[List[Dict]]): Lista de configurações, onde cada configuração é
-                                          uma lista de dicionários de segmentos.
-        filename (str): Nome do arquivo CSV a ser salvo.
+                                          uma lista de dicionários de segmentos
     """
 
     output_path = CSV_FINAL_PATH
@@ -21,26 +35,26 @@ def save_final_vectors_to_csv(configurations: List[List[Dict]]):
         return
 
     # Assume que todas as configurações têm a mesma estrutura de segmentos
-    # Pega os nomes das colunas do primeiro segmento da primeira configuração
-    # Adapte conforme a estrutura exata que você quer salvar
     fieldnames = ['config_index', 'segment_index', 'start_x', 'start_y', 'end_x', 'end_y', 'length']
 
     try:
-        with open(output_path, 'w', newline='', encoding='utf-8') as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames, delimiter=';')
-            writer.writeheader()
+        with use_decimal_point():
+            with open(output_path, 'w', newline='', encoding='utf-8') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames, delimiter=';')
+                writer.writeheader()
 
-            for config_idx, config in enumerate(configurations):
-                for seg_idx, segment in enumerate(config):
-                    writer.writerow({
-                        'config_index': config_idx,
-                        'segment_index': seg_idx,
-                        'start_x': segment.get('start', (None, None))[0],
-                        'start_y': segment.get('start', (None, None))[1],
-                        'end_x': segment.get('end', (None, None))[0],
-                        'end_y': segment.get('end', (None, None))[1],
-                        'length': segment.get('length', None)
-                    })
+                for config_idx, config in enumerate(configurations):
+                    for seg_idx, segment in enumerate(config):
+                        # Formatando os números com ponto decimal e sem separador de milhar                        # Formata os números sem separador de milhar e usando vírgula decimal
+                        writer.writerow({
+                            'config_index': config_idx,
+                            'segment_index': seg_idx,
+                            'start_x': f"{float(segment.get('start', (None, None))[0]):,.6f}".replace('.', '@').replace(',', '').replace('@', ','),
+                            'start_y': f"{float(segment.get('start', (None, None))[1]):,.6f}".replace('.', '@').replace(',', '').replace('@', ','),
+                            'end_x': f"{float(segment.get('end', (None, None))[0]):,.6f}".replace('.', '@').replace(',', '').replace('@', ','),
+                            'end_y': f"{float(segment.get('end', (None, None))[1]):,.6f}".replace('.', '@').replace(',', '').replace('@', ','),
+                            'length': f"{float(segment.get('length', None)):,.6f}".replace('.', '@').replace(',', '').replace('@', ',')
+                        })
         print(f"Vetores finais salvos com sucesso em: {output_path}")
 
     except Exception as e:
