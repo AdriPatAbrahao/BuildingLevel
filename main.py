@@ -16,6 +16,7 @@ Date: March 2025
 """
 # Standard library imports
 import copy
+import traceback
 import time # Added for potential delays and timing
 from typing import List, Tuple, Optional, Dict
 from sklearn.model_selection import train_test_split
@@ -171,7 +172,6 @@ class BuildingOptimizer:
             TQSUtil.writef(error_message) # Log to TQS console too
             print(error_message)
             # Optional: Log detailed traceback for debugging
-            import traceback
             print("Traceback:")
             print(traceback.format_exc())
             # Consider re-raising or exiting based on desired behavior on error
@@ -376,10 +376,10 @@ class BuildingOptimizer:
 
             # Optional: Plot the generated configuration
             # print("Plotting current segment configuration...")
-            # try:
-            #      self.segment_plotter.plot_segments(new_segments, self.current_iteration)
-            # except Exception as plot_e:
-            #      print(f"Warning: Failed to plot segment configuration: {plot_e}")
+            try:
+                  self.segment_plotter.plot_segments(new_segments, self.current_iteration)
+            except Exception as plot_e:
+                  print(f"Warning: Failed to plot segment configuration: {plot_e}")
 
             # 2. Get analysis results (TQS or Geometric)
             analysis_start_time = time.time()
@@ -469,25 +469,31 @@ class BuildingOptimizer:
         """
         print(f"Performing analysis using: {self.analysis_mode}")
         if self.use_geometric_estimate:
+            print("  [Geometric] Starting geometric volume calculation...")
             # --- Geometric Estimation Mode ---
             try:
-                print("   Processing segments for geometric calculation...")
+                print("  [Geometric] Step 1: Processing segments into geometric shapes...")
                 # Process segments to get beam definitions needed for volume calc
                 # Assume processors return tuple: (column_geometry, beam_definitions)
                 if self.use_vector_input:
-                    _, beam_definitions = self.length_processor.process_segments(segments)
+                    column_polygons, beam_definitions = self.length_processor.process_segments(segments)
                 else:
-                    _, beam_definitions = self.binary_processor.process_segments(segments)
+                    column_polygons, beam_definitions = self.binary_processor.process_segments(segments)
+
+                if not column_polygons:
+                    print("  [Geometric] Warning: No column polygons were generated. Concrete volume might be underestimated.")
+                    column_polygons = [] # Ensure it's a list
 
                 # Handle case where beam definitions might not be generated
                 if beam_definitions is None:
                      print("   Warning: Could not determine beam definitions. Calculating volume based on pillars only.")
                      beam_definitions = [] # Use empty list for calculator
 
-                # Calculate geometric volume (steel is None)
-                concrete_volume = get_geometric_concrete_volume(segments, beam_definitions)
+                print("  [Geometric] Step 2: Calculating total concrete volume...")
+                concrete_volume = get_geometric_concrete_volume(column_polygons, beam_definitions)
                 print(f"   Geometric Concrete Volume Estimated: {concrete_volume:.4f} m³")
                 return None, concrete_volume # Steel is None
+                
 
             except Exception as e:
                 print(f"   Error during geometric calculation: {e}")
@@ -495,24 +501,40 @@ class BuildingOptimizer:
                 return None, None # Indicate failure
         else:
             # --- TQS Analysis Mode ---
-            return self._run_tqs_model(segments)
+            print("  [TQS] Starting full TQS analysis pipeline...")
+
+            model_was_created = self._create_tqs_structural_model(segments)
+
+            if model_was_created:
+                # This second function runs the analysis and extracts results.
+                steel_kgf, concrete_m3 = self._execute_tqs_analysis_and_get_results(segments)
+            
+                # Return the results, which could be (None, None) if execution failed.
+                return steel_kgf, concrete_m3
+
+            else:
+                # If model creation failed, abort the process for this sample.
+                print("  [TQS] Error: Aborting analysis because model creation failed.")
+                return None, None
 
 
-    def _run_tqs_model(self, segments: List[dict]) -> Tuple[Optional[float], Optional[float]]:
+    def _create_tqs_structural_model(self, segments: List[dict]) -> bool:
         """
-        Executes the full TQS structural analysis for a given segment configuration.
-        Handles segment processing, model creation, execution, and result extraction.
+        Creates and saves a TQS model file based on a given structural geometry.
 
+        This function handles the entire modeling pipeline:
+        1. Processes the abstract segment geometry into TQS-compatible polygons and definitions.
+        2. Invokes the TQSModelManager to create and save the building model with all
+        structural elements (columns, beams, slabs).
+        
         Args:
-            segments: List of segment dictionaries defining the structure.
+            segments: A list of segment dictionaries defining the structure's geometry.
 
         Returns:
-            Tuple (steel_kgf, concrete_m3) or (None, None) if analysis fails at any step.
+            bool: True if the TQS model file was created and saved successfully, False otherwise.
         """
+        print("  [Modeling]  Starting TQS model creation pipeline...")
         try:
-            print("   Starting TQS Analysis Pipeline...")
-            start_time_tqs = time.time()
-
             # 1. Process segments into TQS-compatible geometry
             print("      Step 1: Processing segments for TQS geometry...")
             if self.use_vector_input:
@@ -523,7 +545,7 @@ class BuildingOptimizer:
             # Validate processing results
             if not column_polygons:
                  print("      TQS Error: Segment processing yielded no column polygons.")
-                 return None, None
+                 return False
             if beam_definitions is None:
                  print("      TQS Warning: Segment processing yielded no beam definitions. Proceeding with columns only.")
                  beam_definitions = [] # Ensure list format
@@ -533,12 +555,32 @@ class BuildingOptimizer:
             # 2. Create TQS building model
             print("      Step 2: Creating TQS building model...")
             # Ensure TQS Manager logs details on failure
-            model_created = self.tqs_manager.create_building_model(column_polygons, beam_definitions)
+            model_created = self.tqs_manager.create_building_model_and_elements(column_polygons, beam_definitions)
             if not model_created:
                 print("      TQS Error: Failed to create building model via TQS Manager.")
-                return None, None
+                return False
             print("      TQS model created successfully.")
+            return True
 
+        except Exception as e:
+            print(f"  [Modeling]  Error: An unexpected exception occurred during model creation: {e}")
+            print(traceback.format_exc())
+            return False # Indicate failure 
+        
+    def _execute_tqs_analysis_and_get_results(self, segments: List[dict]) -> Tuple[Optional[float], Optional[float]]:
+        """
+        Runs the TQS analysis on a pre-existing model and extracts the material results.    
+
+        Args:
+            segments: List of segment dictionaries defining the structure.
+
+        Returns:
+            Tuple (steel_kgf, concrete_m3) or (None, None) if analysis fails at any step.
+        """
+        print("  [Execution] Starting TQS analysis and result extraction...")
+        try:
+            start_time_exec  = time.time()
+           
             # 3. Run TQS analysis executables
             print("      Step 3: Executing TQS global processing...")
             RunModel(BuildingConfig.NAME) # Assumes RunModel handles TQS execution flow
@@ -548,14 +590,15 @@ class BuildingOptimizer:
             tqs_output_file = BuildingConfig.RESULTS_PATH
             print(f"      Step 4: Extracting results from {tqs_output_file}...")
             # Optional delay: If RunModel is async, TQS might need time to write the file.
-            timeout = 10  # seconds
-            start = time.time()
+            timeout = 20  # seconds
+            start_wait_time  = time.time()
             while not tqs_output_file.exists():
-                if time.time() - start > timeout:
-                    print("Timeout waiting for TQS output file.")
+                if time.time() - start_wait_time  > timeout:
+                    print(f"  [Execution] Error: Timeout after {timeout}s waiting for TQS output file.")
                     return None, None
-                time.sleep(0.2)
+                time.sleep(0.5)
 
+            print("  [Execution] Results file found. Extracting summary...")
             steel_value_str, concrete_value_str = extract_material_summary(tqs_output_file)
 
             if steel_value_str is None or concrete_value_str is None:
@@ -573,17 +616,16 @@ class BuildingOptimizer:
                  return None, None
 
             end_time_tqs = time.time()
-            print(f"   TQS Analysis successful ({end_time_tqs - start_time_tqs:.2f}s). Steel: {steel_kgf:.2f} kgf, Concrete: {concrete_m3:.3f} m³")
-            return steel_kgf, concrete_m3
-
+            print(f"   TQS Analysis successful ({end_time_tqs - start_time_exec:.2f}s). Steel: {steel_kgf:.2f} kgf, Concrete: {concrete_m3:.3f} m³")
+            return steel_kgf, concrete_m3 
+        
         except Exception as e:
             # Catch any unexpected errors during the TQS pipeline
             error_time = time.time()
             print(f"   TQS Error: An unexpected exception occurred during TQS pipeline at {error_time:.0f}: {e}")
             TQSUtil.writef(f"Error during TQS model run/extraction: {str(e)}")
-            import traceback # Log detailed traceback for debugging
             print(traceback.format_exc())
-            return None, None # Indicate failure
+            return None, None # Indicate failure 
 
     # -------------------------------------------------------------------------
     # Evaluation and Plotting Helper Methods (Placeholder implementations)
@@ -742,7 +784,6 @@ def main():
          print(f"Error Type: {type(main_error).__name__}")
          print(f"Error Details: {main_error}")
          # Log detailed traceback
-         import traceback
          print("\nTraceback:")
          print(traceback.format_exc())
          print("--- Script execution aborted ---")

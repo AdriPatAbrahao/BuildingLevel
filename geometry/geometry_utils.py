@@ -1,7 +1,7 @@
 # Em algorithm/geometry_utils.py (ou algorithm/polygon_processor.py)
 
 from config.constants import BEAM_THICKNESS
-from shapely.geometry import Polygon
+from shapely.geometry import Polygon, LinearRing
 import pyclipper 
 from typing import List, Dict, Tuple, Set, Optional
 
@@ -68,6 +68,29 @@ class GeometryProcessor:
             
             rectangles_vertices_list.append(vertices)
         return rectangles_vertices_list
+    
+    @staticmethod
+    def standardize_to_ccw_orientation(polygon: Polygon) -> Polygon:
+        """
+        Ensures a polygon's exterior ring has a counter-clockwise (CCW) orientation.
+
+        Shapely's Polygon constructor typically enforces this, but this function
+        makes the requirement explicit and serves as a robust safeguard.
+
+        Args:
+            polygon: The input Shapely Polygon object.
+
+        Returns:
+            A new Polygon with a guaranteed counter-clockwise exterior ring.
+        """
+        # A polygon's exterior ring must be counter-clockwise for it to be considered solid.
+        exterior_ring = LinearRing(polygon.exterior.coords)
+
+        if exterior_ring.is_ccw:
+            return polygon
+        else:
+            # Reverse the coordinates to ensure CCW orientation
+            return Polygon(list(exterior_ring.coords)[::-1], [interior.coords for interior in polygon.interiors])
 
     @staticmethod
     def convert_vertices_to_polygons(
@@ -113,11 +136,8 @@ class GeometryProcessor:
 
         pc = pyclipper.Pyclipper()
         for polygon in valid_polygons:
-            coords = list(polygon.exterior.coords)
-            # PyClipper generally prefers counter-clockwise for subjects,
-            # but union operation is often robust. Explicit CCW can be added if issues arise.
-            # if not polygon.exterior.is_ccw:
-            #     coords = coords[::-1]
+            standard_polygon = GeometryProcessor.standardize_to_ccw_orientation(polygon)
+            coords = list(standard_polygon.exterior.coords)
             pc.AddPath(coords, pyclipper.PT_SUBJECT, True)
         
         try:
@@ -125,8 +145,7 @@ class GeometryProcessor:
             return [Polygon(path) for path in solution if path] # Ensure path is not empty
         except pyclipper.PyclipperException as e:
             print(f"Error (GP.union_polygons): PyClipper union failed: {e}")
-            # Fallback: return original valid polygons without union, or an empty list
-            return valid_polygons # Or [] depending on desired error handling
+            return valid_polygons
 
     @staticmethod
     def build_graph_from_polygon_intersections(

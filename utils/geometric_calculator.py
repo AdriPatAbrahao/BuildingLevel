@@ -2,6 +2,7 @@
 
 import numpy as np
 from typing import List, Dict
+from shapely.geometry import Polygon
 
 # --- Constantes ---
 # Fator de conversão
@@ -9,46 +10,59 @@ CM_TO_M = 0.01 # 1 cm = 0.01 m
 
 # --- Dimensões Fixas (em CM) ---
 # !!! AJUSTE ESTES VALORES CONFORME SEU PROJETO !!!
-PILLAR_STORY_HEIGHT_CM = 300.0  # Ex: Pé direito de 3 metros
-PILLAR_FIXED_WIDTH_CM = 20.0   # Ex: Largura fixa da seção do pilar de 20cm
+COLUMN_STORY_HEIGHT_CM = 300.0  # Ex: Pé direito de 3 metros
+COLUMN_FIXED_WIDTH_CM = 20.0   # Ex: Largura fixa da seção do pilar de 20cm
 
 BEAM_WIDTH_CM = 20.0          # Ex: Largura da viga de 20cm
 BEAM_HEIGHT_CM = 40.0         # Ex: Altura da viga de 40cm
 
 # Converter dimensões fixas para metros para cálculos de volume
-PILLAR_STORY_HEIGHT_M = PILLAR_STORY_HEIGHT_CM * CM_TO_M
-PILLAR_FIXED_WIDTH_M = PILLAR_FIXED_WIDTH_CM * CM_TO_M
+COLUMN_STORY_HEIGHT_M = COLUMN_STORY_HEIGHT_CM * CM_TO_M
+COLUMN_FIXED_WIDTH_M = COLUMN_FIXED_WIDTH_CM * CM_TO_M
 BEAM_WIDTH_M = BEAM_WIDTH_CM * CM_TO_M
 BEAM_HEIGHT_M = BEAM_HEIGHT_CM * CM_TO_M
 # --- Fim das Constantes ---
 
 
-def calculate_pillars_geometric_volume(pillar_segments: List[Dict]) -> float:
+def calculate_column_geometric_volume(column_polygons: List[Polygon]) -> float:
     """
-    Calcula o volume geométrico total para uma lista de segmentos de pilares.
+    Calculates the total geometric volume for a list of pillar polygons.
+
+    This function operates on the final polygon shapes of the columns, which
+    are typically the result of union operations on overlapping segments. It
+    calculates volume as (Polygon Base Area * Story Height).
 
     Args:
-        pillar_segments (List[Dict]): Lista de dicionários representando os pilares.
-                                       Cada dicionário deve ter a chave 'length' (em cm).
+        column_polygons (List[Polygon]): A list of Shapely Polygon objects
+                                         representing the base of each pillar.
+                                         The coordinates of the polygons are
+                                         assumed to be in centimeters (cm).
 
     Returns:
-        float: Volume total dos pilares em metros cúbicos (m³).
+        float: The total volume of all pillars in cubic meters (m³).
     """
-    total_pillar_volume_m3 = 0.0
-    for pillar in pillar_segments:
-        # Pega o comprimento variável do pilar (em cm)
-        variable_length_cm = pillar.get("length")
+    total_column_volume_m3 = 0.0
 
-        if variable_length_cm is not None and variable_length_cm > 0:
-            variable_length_m = variable_length_cm * CM_TO_M
-            # Calcula o volume do pilar individual em m³
-            volume_m3 = PILLAR_STORY_HEIGHT_M * PILLAR_FIXED_WIDTH_M * variable_length_m
-            total_pillar_volume_m3 += volume_m3
+    if not column_polygons:
+        print("  [Geometric] Warning: No column polygons provided for volume calculation.")
+        return 0.0
+
+    for column in column_polygons:
+        # Ensure the provided object is a valid, non-empty polygon
+        if column and isinstance(column, Polygon) and not column.is_empty:
+            
+            # 1. Get the base area from the Shapely polygon.
+            base_area_cm2 = column.area
+            base_area_m2 = base_area_cm2 / 10000.0  # Convert cm² to m²
+
+            # 3. Calculate the volume for the individual pillar in cubic meters (m³).
+            column_volume_m3 = base_area_m2 * COLUMN_STORY_HEIGHT_M
+            
+            total_column_volume_m3 += column_volume_m3
         else:
-             print(f"Aviso: Segmento de pilar inválido encontrado: {pillar}")
+            print(f"  [Geometric] Warning: An invalid or empty pillar polygon was skipped: {column}")
 
-    return total_pillar_volume_m3
-
+    return total_column_volume_m3
 
 def calculate_beams_geometric_volume(beam_definitions: List[Dict]) -> float:
     """
@@ -84,7 +98,7 @@ def calculate_beams_geometric_volume(beam_definitions: List[Dict]) -> float:
     return total_beam_volume_m3
 
 
-def get_geometric_concrete_volume(pillar_segments: List[Dict], beam_definitions: List[Dict]) -> float:
+def get_geometric_concrete_volume(column_pollygon: List[Dict], beam_definitions: List[Dict]) -> float:
     """
     Calcula o volume geométrico total estimado de concreto para pilares e vigas.
 
@@ -93,13 +107,13 @@ def get_geometric_concrete_volume(pillar_segments: List[Dict], beam_definitions:
     maior que o volume calculado por softwares como o TQS.
 
     Args:
-        pillar_segments (List[Dict]): Lista de dicionários dos segmentos de pilares.
+        column_pollygon (List[Dict]): Lista de dicionários dos poligons de pilares.
         beam_definitions (List[Dict]): Lista de dicionários das definições de vigas.
 
     Returns:
         float: Volume total estimado de concreto em metros cúbicos (m³).
     """
-    volume_pilares = calculate_pillars_geometric_volume(pillar_segments)
+    volume_pilares = calculate_column_geometric_volume(column_pollygon)
     volume_vigas = calculate_beams_geometric_volume(beam_definitions)
 
     print(f"[Geométrico] Vol. Pilares: {volume_pilares:.4f} m³ | Vol. Vigas: {volume_vigas:.4f} m³")

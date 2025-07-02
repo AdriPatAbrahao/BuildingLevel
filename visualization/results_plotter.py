@@ -1,4 +1,5 @@
 import matplotlib
+from sklearn.metrics import r2_score
 matplotlib.use('Agg')  # Set non-interactive backend before importing pyplot
 import matplotlib.pyplot as plt
 import numpy as np
@@ -28,6 +29,10 @@ class ResultsPlotter:
             idx = 0 if material_type == 'steel' else 1
             pred_values = [p[idx] for p in predictions]
             true_values = [a[idx] for a in actual_values]
+
+            if not true_values or not pred_values:
+                print(f"Warning: No data to plot for {material_type}.")
+                return
             
             # Plot predicted vs actual
             plt.scatter(true_values, pred_values, c='blue', alpha=0.5, label='Test Points')
@@ -39,14 +44,13 @@ class ResultsPlotter:
             max_val = max(max(true_values), max(pred_values))
             plt.plot([min_val, max_val], [min_val, max_val], 'r--', label='Perfect Prediction')
             
-            # Calculate R² score
-            correlation = np.corrcoef(true_values, pred_values)[0,1]
-            r2_score = correlation ** 2
+            # Calculate R² score (Coefficient of Determination)
+            r2 = r2_score(true_values, pred_values)
             
             # Add labels and title
             plt.xlabel(f'TQS Calculated {material_type.title()} {"(kgf)" if material_type=="steel" else "(m³)"}')
             plt.ylabel(f'DNN Predicted {material_type.title()} {"(kgf)" if material_type=="steel" else "(m³)"}')
-            plt.title(f'{material_type.title()} Prediction Comparison\nR² = {r2_score:.3f}')
+            plt.title(f'{material_type.title()} Prediction Comparison\nR² = {r2:.3f}')
             
             plt.grid(True)
             plt.legend()

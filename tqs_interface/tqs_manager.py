@@ -36,19 +36,6 @@ class TQSModelManager:
             TQSUtil.writef(traceback.format_exc())
             return False
         
-    def add_structural_elements(self, polygons: List, binary_0_groups: List, coordinates: List) -> bool:
-        """Add structural elements to the model"""
-        if not self.model:
-            TQSUtil.writef("No active model")
-            return False
-            
-        try:            
-            self._add_columns(polygons)
-            self._add_beams_and_slabs(binary_0_groups, coordinates)
-            return self._save_model()
-        except Exception as e:
-            TQSUtil.writef(f"Error adding structural elements: {str(e)}")
-            return False
             
     def _save_tqs_model(self) -> bool:
         """Saves the current TQS model. Renamed for clarity."""
@@ -113,20 +100,49 @@ class TQSModelManager:
             TQSUtil.writef(f"Manager Error: Exception during column addition: {e}")
             TQSUtil.writef(traceback.format_exc())
             return False
-
-    def _add_beams_and_slabs(self, beam_definitions: List[Dict],
-                             slab_insertion_points: List[Tuple[float, float]]) -> bool: # slab_insertion_points para clareza
+        
+    def _add_slabs(self, slab_insertion_points: List[Tuple[float, float]]) -> bool:
+        """Adiciona as lajes ao pavimento tipo, APÓS as vigas terem sido processadas."""
+        if not self.model: return False
+        if not slab_insertion_points: return True
+        TQSUtil.writef(f"Manager: Adicionando {len(slab_insertion_points)} lajes em '{NOMPLANTA_TIPO}'...")
+        # Add Slabs
+        try:
+            floor = self.model.floors.GetFloor(NOMPLANTA_TIPO)
+            if not floor:
+                TQSUtil.writef(f"Manager Error: Could not get foundation floor '{NOMPLANTA_FUNDAC}'.")
+                return False
+            
+            if slab_insertion_points: # Only proceed if there are slabs to add
+                for i, (insert_x, insert_y) in enumerate(slab_insertion_points):
+                    if not TQSElementFactory.create_slab(
+                        floor, 
+                        insert_x_cm=insert_x, insert_y_cm=insert_y
+                    ):
+                        TQSUtil.writef(f"Manager Error: Failed to create slab {i+1} at ({insert_x},{insert_y}) using factory.")
+                        return False # Stop if one slab fails
+                    
+            TQSUtil.writef("Manager: Performing intersections on typical floor...")
+            floor.util.DoIntersections()
+            TQSUtil.writef("Manager: Slabs added and intersections performed.")
+            return True
+        
+        except Exception as e:
+            TQSUtil.writef(f"Manager Error: Exception during slab addition: {e}")
+            TQSUtil.writef(traceback.format_exc())
+            return False
+        
+    def _add_beams(self, beam_definitions: List[Dict]) -> bool: 
         """
-        Adds beams and slabs to the typical floor ('Tipo') of the current TQS model.
+        Adds beams to the typical floor ('Tipo') of the current TQS model.
 
         Args:
             beam_definitions (List[Dict]): List of beam definitions. Each dict should have
                                            'node_1': (x,y) and 'node_2': (x,y) in cm.
-            slab_insertion_points (List[Tuple[float, float]]): List of (x,y) tuples,
-                                           where each tuple is a point within a slab to be created (cm).
         Returns:
-            bool: True if all beams and slabs were added successfully, False otherwise.
+            bool: True if all beams were added successfully, False otherwise.
         """
+        TQSUtil.writef(f"Manager: Adicionando {len(beam_definitions)} vigas em '{NOMPLANTA_TIPO}'...")
         try:
             floor = self.model.floors.GetFloor(NOMPLANTA_TIPO) 
             if not floor:
@@ -153,25 +169,12 @@ class TQSModelManager:
                     ):
                         TQSUtil.writef(f"Manager Error: Failed to create beam {i+1} using factory.")
                         return False # Stop if one beam fails
-            
-            # Add Slabs
-            if slab_insertion_points: # Only proceed if there are slabs to add
-                for i, (insert_x, insert_y) in enumerate(slab_insertion_points):
+                floor.util.DoIntersections()
+                return True            
 
-                    if not TQSElementFactory.create_slab(
-                        self.model, floor, 
-                        insert_x_cm=insert_x, insert_y_cm=insert_y
-                    ):
-                        TQSUtil.writef(f"Manager Error: Failed to create slab {i+1} at ({insert_x},{insert_y}) using factory.")
-                        return False # Stop if one slab fails
-                    
-            TQSUtil.writef("Manager: Performing intersections on typical floor...")
-            floor.util.DoIntersections()
-            TQSUtil.writef("Manager: Beams, slabs added and intersections performed.")
-            return True
 
         except Exception as e:
-            TQSUtil.writef(f"Manager Error: Exception during beam/slab addition: {e}")
+            TQSUtil.writef(f"Manager Error: Exception during beam addition: {e}")
             TQSUtil.writef(traceback.format_exc())
             return False
 
@@ -228,7 +231,16 @@ class TQSModelManager:
             if not self._add_columns(column_polygons):
                 # Error logged by helper
                 return False
-            if not self._add_beams_and_slabs(beam_definitions, slab_points):
+            if not self._save_tqs_model():
+                # Error logged by helper
+                return False
+            if not self._add_beams(beam_definitions):
+                # Error logged by helper
+                return False
+            if not self._save_tqs_model():
+                # Error logged by helper
+                return False
+            if not self._add_slabs(slab_points):
                 # Error logged by helper
                 return False
             TQSUtil.writef("Manager: Structural elements added.")

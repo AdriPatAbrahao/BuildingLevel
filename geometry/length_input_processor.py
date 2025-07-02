@@ -14,7 +14,8 @@ class LengthProcessor:
         
     def read_length_from_csv(self) -> List[dict]:
         """Reads column vectors from CSV and converts to segments"""
-        df = pd.read_csv(VECTOR_CSV_PATH, delimiter=';')
+        # Força o pandas a usar ponto como separador decimal
+        df = pd.read_csv(VECTOR_CSV_PATH, delimiter=';', decimal=',')
         segments = []
         for _, row in df.iterrows():
             x = float(row["x"])
@@ -135,7 +136,7 @@ class LengthProcessor:
         made_changes = False
         max_attempts = 10
         attempt = 0
-        step = 0.05  # Variação em múltiplos de 5 cm (0.05 metros)
+        step = 5.0 # Variação em múltiplos de 5 cm
     
         while not made_changes and attempt < max_attempts:
             for segment in new_segments:

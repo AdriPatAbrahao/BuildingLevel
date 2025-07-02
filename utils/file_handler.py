@@ -13,7 +13,7 @@ def use_decimal_point():
     old_locale = locale.getlocale()
     try:
         # Configura para usar o formato brasileiro (vírgula como separador decimal)
-        locale.setlocale(locale.LC_NUMERIC, 'pt_BR.UTF-8')
+        locale.setlocale(locale.LC_NUMERIC, 'C')
         yield
     finally:
         locale.setlocale(locale.LC_NUMERIC, old_locale)
@@ -49,11 +49,11 @@ def save_final_vectors_to_csv(configurations: List[List[Dict]]):
                         writer.writerow({
                             'config_index': config_idx,
                             'segment_index': seg_idx,
-                            'start_x': f"{float(segment.get('start', (None, None))[0]):,.6f}".replace('.', '@').replace(',', '').replace('@', ','),
-                            'start_y': f"{float(segment.get('start', (None, None))[1]):,.6f}".replace('.', '@').replace(',', '').replace('@', ','),
-                            'end_x': f"{float(segment.get('end', (None, None))[0]):,.6f}".replace('.', '@').replace(',', '').replace('@', ','),
-                            'end_y': f"{float(segment.get('end', (None, None))[1]):,.6f}".replace('.', '@').replace(',', '').replace('@', ','),
-                            'length': f"{float(segment.get('length', None)):,.6f}".replace('.', '@').replace(',', '').replace('@', ',')
+                            'start_x': f"{float(segment.get('start', (None, None))[0]):,.6f}",
+                            'start_y': f"{float(segment.get('start', (None, None))[1]):,.6f}",
+                            'end_x': f"{float(segment.get('end', (None, None))[0]):,.6f}",
+                            'end_y': f"{float(segment.get('end', (None, None))[1]):,.6f}",
+                            'length': f"{float(segment.get('length', None)):,.6f}"
                         })
         print(f"Vetores finais salvos com sucesso em: {output_path}")
 
