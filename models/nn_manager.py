@@ -1,89 +1,103 @@
+from pathlib import Path
 import numpy as np
-from typing import List, Optional, Dict, Any # Added Dict, Any
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+from typing import List, Optional, Dict, Any, Tuple
+import os # Para salvar/carregar o modelo
+from config.settings import BuildingConfig
 
-# Assuming dnnmodel is in algorithm directory relative to project root
-from models.dnnmodel import train_model, SimpleNN, test_model
+# Importa a arquitetura da rede neural e as configurações
+from models.dnnmodel import SimpleNN
+from config.settings import NeuralNetConfig # Importa as configurações da rede neural
 
 class NeuralNetworkManager:
     """
-    Manages the lifecycle of the Neural Network model, including training,
-    storing normalization parameters, and making predictions.
+    Manages the lifecycle of the Neural Network model.
+    Esta versão assume que os dados de entrada (features e outputs)
+    JÁ ESTÃO NORMALIZADOS por uma pipeline externa.
     """
 
-    def __init__(self, input_size: Optional[int] = None, hidden_size: Optional[int] = None, output_size: Optional[int] = None):
-        """
-        Initializes the Neural Network Manager.
+    def __init__(self):
 
-        Args:
-            input_size (Optional[int]): Specify input size, otherwise determined from data during train.
-            hidden_size (Optional[int]): Specify hidden size, otherwise uses a default.
-            output_size (Optional[int]): Specify output size, otherwise uses a default.
-        """
         self.model: Optional[SimpleNN] = None
-        # Store normalization parameters calculated during training
-        self.norm_params: Optional[Dict[str, np.ndarray]] = None
+        self.is_trained: bool = False # Flag para indicar se o modelo foi treinado
 
-        # Store config if provided, otherwise they get set in train
-        self._input_size = input_size
-        self._hidden_size = hidden_size if hidden_size else 128 # Default hidden size
-        self._output_size = output_size if output_size else 2 # Default output size (e.g., steel, concrete)
+        # Carrega configurações do NeuralNetConfig
+        self._input_size = NeuralNetConfig.INPUT_SIZE
+        self._output_size = NeuralNetConfig.OUTPUT_SIZE
+        self.learning_rate = NeuralNetConfig.LEARNING_RATE
+        self.num_epochs = NeuralNetConfig.NUM_EPOCHS
+        self.batch_size = NeuralNetConfig.BATCH_SIZE
+        self.early_stopping_patience = NeuralNetConfig.EARLY_STOPPING_PATIENCE
+        self.validation_split_ratio = NeuralNetConfig.VALIDATION_SPLIT_RATIO
 
+        # Configura o dispositivo (GPU se disponível, CPU caso contrário)
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"NeuralNetworkManager initialized. Using device: {self.device}")
 
-    def train(self, feature_vectors: List[List[float]], outputs: List[List[float]],
-              num_epochs: int = 100, batch_size: int = 16, learning_rate: float = 0.001) -> Dict[str, np.ndarray]:
+    def train(self, X_scaled: np.ndarray, y_scaled: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Trains the neural network on the provided data and stores normalization parameters.
-
-        Args:
-            feature_vectors (List[List[float]]): List of input feature vectors (e.g., lengths or binary flags).
-            outputs (List[List[float]]): List of corresponding target output vectors (e.g., [steel, concrete]).
-            num_epochs (int): Max number of epochs for training.
-            batch_size (int): Batch size for training.
-            learning_rate (float): Learning rate for the optimizer.
-
-        Returns:
-             Dict[str, np.ndarray]: The normalization parameters used during training.
-                                    Returns None if training fails.
+        Treina a rede neural nos dados JÁ NORMALIZADOS.
+        Retorna os dados de teste (também normalizados) para avaliação.
         """
-        print("--- Preparing for NN Training ---")
-        if not feature_vectors or not outputs:
-             raise ValueError("Training failed: feature_vectors or outputs list is empty.")
+        print("--- Preparing for NN Training with Early Stopping ---")
+        print("--- NNManager: Iniciando treinamento com dados pré-normalizados ---")
+        if X_scaled.size == 0 or y_scaled.size == 0:
+            raise ValueError("Treinamento falhou: os arrays de dados normalizados estão vazios.")
 
-        # Determine input size from data if not set previously
-        if self._input_size is None:
-             self._input_size = len(feature_vectors[0])
-             print(f"Input size determined from data: {self._input_size}")
-        # Ensure output size matches data if possible
-        if self._output_size != len(outputs[0]):
-             print(f"Warning: Output size mismatch. Manager expected {self._output_size}, data has {len(outputs[0])}. Using data's size.")
-             self._output_size = len(outputs[0])
+        # Valida e define os tamanhos de entrada/saída dinamicamente
+        self._validate_and_set_sizes(X_scaled, y_scaled)
 
-        # Create the model instance
-        print(f"Creating SimpleNN model: Input={self._input_size}, Hidden={self._hidden_size}, Output={self._output_size}")
-        self.model = SimpleNN(input_size=self._input_size, hidden_size=self._hidden_size, output_size=self._output_size)
+                # 1. Dividir dados e criar DataLoaders
+        #    A divisão agora é mais simples, pois não há dados "originais" para guardar.
+        X_train_val, X_test, y_train_val, y_test = train_test_split(
+            X_scaled, y_scaled, test_size=NeuralNetConfig.TEST_SPLIT_RATIO, random_state=42
+        )
+        train_loader, val_loader = self._create_dataloaders(X_train_val, y_train_val)
 
-        # Convert lists to numpy arrays for train_model
-        X_train_np = np.array(feature_vectors, dtype=np.float32)
-        y_train_np = np.array(outputs, dtype=np.float32)
+        # 3. Initialize model, loss, and optimizer
+        criterion, optimizer = self._initialize_model_components()
 
-        # Call the training function and store normalization parameters
-        try:
-            print("Calling train_model function...")
-            self.norm_params = train_model(
-                self.model, X_train_np, y_train_np,
-                num_epochs=num_epochs, batch_size=batch_size, learning_rate=learning_rate
-            )
-            print("--- NN Training Complete ---")
-            return self.norm_params # Return the params
-        except Exception as e:
-            print(f"Error during model training: {e}")
-            # import traceback
-            # print(traceback.format_exc())
-            self.model = None # Ensure model is None if training failed
-            self.norm_params = None
-            raise # Re-raise the exception
+        # 4. Training loop with Early Stopping
+        best_val_loss = float('inf')
+        patience_counter = 0
+        best_model_state = None
+
+        print(f"Starting training for {self.num_epochs} epochs...")
+        for epoch in range(self.num_epochs):
+            train_loss = self._run_train_epoch(train_loader, criterion, optimizer)
+            val_loss = self._run_eval_epoch(val_loader, criterion)
+            
+            print(f'Epoch [{epoch+1}/{self.num_epochs}], Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}')
+
+            # Early Stopping logic
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                patience_counter = 0
+                best_model_state = self.model.state_dict() # Save the best model state
+                print(f"  New best validation loss: {best_val_loss:.4f}. Model state saved.")
+            else:
+                patience_counter += 1
+                print(f"  Validation loss did not improve. Patience: {patience_counter}/{self.early_stopping_patience}")
+                if patience_counter >= self.early_stopping_patience:
+                    print(f"  Early stopping triggered after {epoch+1} epochs (patience {self.early_stopping_patience} reached).")
+                    break
         
-    def predict(self, feature_vectors: List[List[float]]) -> np.ndarray:
+        if best_model_state is not None:
+            self.model.load_state_dict(best_model_state) # Load the best model
+            print("Loaded best model state based on validation loss.")
+        else:
+            print("Warning: No best model state saved (perhaps training was too short or data was problematic).")
+
+        self.is_trained = True
+        print("--- NN Training Complete ---")
+        return X_test, y_test
+  
+    def predict(self, X_scaled: np.ndarray) -> np.ndarray:
         """
         Makes predictions using the trained model and applies denormalization.
 
@@ -94,53 +108,132 @@ class NeuralNetworkManager:
             np.ndarray: Array of denormalized predictions [steel, concrete].
                         Returns an empty array if prediction is not possible.
         """
-        print("--- Making Predictions ---")
-        if self.model is None:
-            raise RuntimeError("Prediction failed: Model has not been trained yet. Call train() first.")
-        if self.norm_params is None:
-             # Option 1: Raise error - safer if normalization is critical
-             raise RuntimeError("Prediction failed: Normalization parameters are missing. Was the model trained correctly?")
-             # Option 2: Predict without normalization (less safe, likely inaccurate)
-             # print("Warning: Normalization parameters not found. Predicting on raw data.")
-             # X_test_np = np.array(feature_vectors, dtype=np.float32)
-             # with torch.no_grad():
-             #    inputs_tensor = torch.tensor(X_test_np, dtype=torch.float32)
-             #    raw_predictions = self.model(inputs_tensor).numpy()
-             # return raw_predictions # Return raw predictions in this case
+        if self.model is None or not self.is_trained:
+            raise RuntimeError("Prediction failed: Model has not been trained yet or training failed. Call train() first.")
+        
+        self.model.eval() # Garante que o modelo está em modo de avaliação
+        X_tensor = torch.tensor(X_scaled, dtype=torch.float32).to(self.device)
 
-        if not feature_vectors:
-            print("Warning: Input feature_vectors for prediction is empty.")
-            return np.array([])
+        self.model.eval()
+        with torch.no_grad():
+            predictions_normalized = self.model(X_tensor).cpu().numpy()
 
-        X_test_np = np.array(feature_vectors, dtype=np.float32)
+        return predictions_normalized
 
-        # Call test_model, passing the required normalization parameters
+    def save_model(self, path: Path):
+        """
+        Salva apenas o estado do modelo e sua arquitetura.
+        Não salva mais os parâmetros de normalização.
+        """
+        if not self.is_trained:
+            print("Aviso: Modelo não treinado. Nada para salvar.")
+            return
+        
+        checkpoint = {
+            'model_state_dict': self.model.state_dict(),
+            'input_size': self._input_size,
+            'output_size': self._output_size,
+            'hidden_layers': NeuralNetConfig.HIDDEN_LAYERS,
+            'dropout_rate': NeuralNetConfig.DROPOUT_RATE
+        }
         try:
-            print("Calling test_model (applies input normalization)...")
-            # test_model applies X normalization and returns predictions on y's normalized scale
-            predictions_normalized = test_model(self.model, X_test_np, self.norm_params)
-
-            if predictions_normalized.size == 0:
-                 print("Warning: test_model returned empty predictions.")
-                 return np.array([])
-
-            # Denormalize the predictions using stored y_mean and y_std
-            print("Denormalizing predictions...")
-            y_mean = self.norm_params['y_mean']
-            y_std_safe = self.norm_params['y_std'] # Use the safe std dev
-
-            # Denormalization: prediction = prediction_normalized * std + mean
-            predictions_denormalized = predictions_normalized * y_std_safe + y_mean
-            print("--- Prediction Complete ---")
-
-            return predictions_denormalized
-
+            torch.save(checkpoint, path)
+            print(f"--- [SAVE SUCCESS] torch.save() executado com sucesso para o caminho: '{path}' ---")
         except Exception as e:
-             print(f"Error during model prediction: {e}")
-             # import traceback
-             # print(traceback.format_exc())
-             return np.array([]) # Return empty array on error
-
-
+            print(f"--- [SAVE FAILED] torch.save() FALHOU com um erro: {e} ---")
     
+    def load_model(self, path: Path) -> bool: # Recebe um objeto Path
+        """
+        Carrega o estado do modelo e sua arquitetura a partir de um caminho.
+        Retorna True se bem-sucedido, False caso contrário.
+        """
+        if not os.path.exists(path):
+            print(f"Erro: Nenhum modelo encontrado em {path}")
+            return False
 
+        try:
+            checkpoint = torch.load(path, map_location=self.device)
+            
+            self._input_size = checkpoint['input_size']
+            self._output_size = checkpoint['output_size']
+            hidden_layers = checkpoint['hidden_layers']
+            dropout_rate = checkpoint['dropout_rate']
+
+            self.model = SimpleNN(
+                input_size=self._input_size, 
+                output_size=self._output_size, 
+                hidden_layers=hidden_layers, 
+                dropout_rate=dropout_rate
+            ).to(self.device)
+            
+            self.model.load_state_dict(checkpoint['model_state_dict'])
+            self.model.eval()
+            
+            self.is_trained = True
+            print(f"Modelo carregado com sucesso de {path}")
+            return True
+        except Exception as e:
+            print(f"Erro ao carregar o modelo de {path}: {e}")
+            self.is_trained = False
+            return False
+
+    def _validate_and_set_sizes(self, X: np.ndarray, y: np.ndarray):
+        """Valida e define os tamanhos de entrada/saída a partir dos dados."""
+        if self._input_size != X.shape[1]:
+            print(f"Aviso: INPUT_SIZE da config ({self._input_size}) é diferente do dado ({X.shape[1]}). Usando o tamanho do dado.")
+            self._input_size = X.shape[1]
+        if self._output_size != y.shape[1]:
+            print(f"Aviso: OUTPUT_SIZE da config ({self._output_size}) é diferente do dado ({y.shape[1]}). Usando o tamanho do dado.")
+            self._output_size = y.shape[1]
+
+    def _create_dataloaders(self, X_train_val: np.ndarray, y_train_val: np.ndarray) -> Tuple[DataLoader, DataLoader]:
+        """Cria DataLoaders de treino e validação a partir de um conjunto de dados."""
+        X_train, X_val, y_train, y_val = train_test_split(
+            X_train_val, y_train_val, test_size=NeuralNetConfig.VALIDATION_SPLIT_RATIO, random_state=42
+        )
+
+        train_dataset = TensorDataset(torch.tensor(X_train, dtype=torch.float32), torch.tensor(y_train, dtype=torch.float32))
+        train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True)
+
+        val_dataset = TensorDataset(torch.tensor(X_val, dtype=torch.float32), torch.tensor(y_val, dtype=torch.float32))
+        val_loader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False)
+        
+        return train_loader, val_loader
+
+    def _initialize_model_components(self) -> Tuple[nn.Module, optim.Optimizer]:
+        """Inicializa o modelo, a função de perda e o otimizador."""
+        self.model = SimpleNN(
+            input_size=self._input_size, 
+            output_size=self._output_size,
+            hidden_layers=NeuralNetConfig.HIDDEN_LAYERS,
+            dropout_rate=NeuralNetConfig.DROPOUT_RATE
+        ).to(self.device)
+        criterion = nn.MSELoss()
+        optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
+        return criterion, optimizer
+
+    def _run_train_epoch(self, loader: DataLoader, criterion: nn.Module, optimizer: optim.Optimizer) -> float:
+        """Executa uma época de treino."""
+        self.model.train()
+        total_loss = 0.0
+        for batch_X, batch_y in loader:
+            batch_X, batch_y = batch_X.to(self.device), batch_y.to(self.device)
+            optimizer.zero_grad()
+            outputs = self.model(batch_X)
+            loss = criterion(outputs, batch_y)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+        return total_loss / len(loader)
+
+    def _run_eval_epoch(self, loader: DataLoader, criterion: nn.Module) -> float:
+        """Executa uma época de avaliação (validação)."""
+        self.model.eval()
+        total_loss = 0.0
+        with torch.no_grad():
+            for batch_X, batch_y in loader:
+                batch_X, batch_y = batch_X.to(self.device), batch_y.to(self.device)
+                outputs = self.model(batch_X)
+                loss = criterion(outputs, batch_y)
+                total_loss += loss.item()
+        return total_loss / len(loader)

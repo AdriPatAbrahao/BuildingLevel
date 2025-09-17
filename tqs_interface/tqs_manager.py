@@ -222,9 +222,9 @@ class TQSModelManager:
                 # Error already logged by the helper
                 return False
                 
-            slab_points = getattr(BuildingConfig, 'COORDINATES', [])
+            slab_points = getattr(BuildingConfig, 'SLAB_COORDINATES', [])
             if not slab_points:
-                TQSUtil.writef("Manager Warning: No slab insertion points defined in BuildingConfig.COORDINATES. Slabs will not be added.")
+                TQSUtil.writef("Manager Warning: No slab insertion points defined in BuildingConfig.SLAB_COORDINATES. Slabs will not be added.")
 
 
             TQSUtil.writef("Manager: Adding structural elements...")

@@ -1,0 +1,74 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import numpy as np
+from typing import Tuple, Dict, Any
+
+class SimpleNN(nn.Module):
+    """
+    Defines a simple feed-forward neural network architecture.
+
+    Uses Linear layers, BatchNorm1d for stabilization, ReLU activation,
+    and Dropout for regularization.
+    """
+
+    def __init__(self, input_size=24, hidden_size=128, output_size=2):
+        """
+        Initializes the neural network layers.
+
+        Args:
+            input_size (int): Number of input features.
+            hidden_size (int): Number of neurons in the hidden layers.
+            output_size (int): Number of output values to predict.
+        """
+        super(SimpleNN, self).__init__()
+        if input_size <= 0 or hidden_size <= 0 or output_size <= 0:
+            raise ValueError("Layer sizes must be positive integers.")
+        self.input_size = input_size
+
+        # Deeper network with more capacity
+        self.fc1 = nn.Linear(input_size, hidden_size)
+        self.fc2 = nn.Linear(hidden_size, hidden_size)
+        self.fc3 = nn.Linear(hidden_size, hidden_size // 2)
+        self.fc4 = nn.Linear(hidden_size // 2, output_size)
+        
+        self.bn1 = nn.BatchNorm1d(hidden_size)
+        self.bn2 = nn.BatchNorm1d(hidden_size)
+        self.bn3 = nn.BatchNorm1d(hidden_size // 2)
+        
+        self.dropout = nn.Dropout(0.2)
+        self.relu = nn.ReLU()
+
+    def forward(self, x):
+        """
+        Defines the forward pass of the network.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch_size, input_size).
+
+        Returns:
+            torch.Tensor: Output tensor of shape (batch_size, output_size).
+        """
+   
+        # Forward pass logic
+        x = self.fc1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.dropout(x)
+
+        x = self.fc2(x)
+        x = self.bn2(x)
+        x = self.relu(x)
+        x = self.dropout(x)
+
+        x = self.fc3(x)
+        x = self.bn3(x)
+        x = self.relu(x)
+        x = self.dropout(x)
+
+        x = self.fc4(x)
+        return x
+
+
+
+

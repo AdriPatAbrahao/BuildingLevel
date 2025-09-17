@@ -1,4 +1,4 @@
-# main.py
+﻿# main.py
 """
 Main execution script for the Building Structure Optimization process.
 
@@ -6,7 +6,8 @@ This script orchestrates the workflow involving:
 - Reading initial structural configurations.
 - Generating variations of configurations.
 - Analyzing configurations using TQS or a faster geometric estimation.
-- Collecting training data (features and corresponding material quantities).
+- Collecti
+ng training data (features and pycorresponding material quantities).
 - Training a Neural Network model to predict material quantities.
 - Evaluating the trained model.
 - Saving results and configurations.
@@ -16,19 +17,23 @@ Date: March 2025
 """
 # Standard library imports
 import copy
+from random import random
 import traceback
 import time # Added for potential delays and timing
 from typing import List, Tuple, Optional, Dict
-from sklearn.model_selection import train_test_split
+import numpy as np
+from shapely.geometry import Polygon
+from sklearn.metrics import r2_score, mean_absolute_error # Added for evaluation metrics
 # import numpy as np # Uncomment if needed for advanced splitting or direct normalization here
 
 # Third-party imports
-from TQS import TQSUtil # TQS Utility functions
+from TQS import TQSUtil
+import torch # TQS Utility functions
 
 # Project-specific imports
 # Configuration - Make sure these files exist and are configured
-from config.settings import BuildingConfig # General settings, NN config, analysis mode flag
-from config.constants import CSV_FINAL_PATH # Path for saving final vectors CSV
+from config.settings import BuildingConfig, RunConfig # General settings, NN config, analysis mode flag
+from config.paths import FINAL_VECTORS_CSV_PATH # Path for saving final vectors CSV
 
 # Algorithm components - Core logic for processing and ML
 from geometry.binary_input_processor import BinaryProcessor
@@ -55,11 +60,12 @@ from visualization.results_plotter import ResultsPlotter # Plots NN performance 
 # Ensure 'utils' directory exists and contains these files
 from utils.geometric_calculator import get_geometric_concrete_volume # Fast geometric volume estimate
 from utils.file_handler import save_final_vectors_to_csv # Saves generated vectors to CSV
+from utils.feature_engineer import FeatureEngineer
+from utils.feature_pipeline import FeaturePipeline
 
-# --- Constants --- (Consider moving to config if used elsewhere)
-DEFAULT_TRAIN_SPLIT_RATIO = 0.8
-# Safety factor to prevent excessively long data collection loops if analysis fails often
-MAX_ITERATION_FACTOR = 2 # Will attempt up to NUM_SAMPLES * 2 iterations
+from utils.experiment_manager import ExperimentManager
+from config import paths # Importa o mÃ³dulo de caminhos
+import logging
 
 # =============================================================================
 # Main Optimizer Class
@@ -89,39 +95,41 @@ class BuildingOptimizer:
         normalization_params (Optional[Dict]): Stores {'X_mean':..., 'X_std':..., 'y_mean':..., 'y_std':...} after training.
     """
 
-    def __init__(self):
+    def __init__(self, exp_manager: ExperimentManager):
         """Initializes all components required for the optimization."""
         print("--- Initializing Building Optimizer ---")
+        self.exp_manager = exp_manager
+
+        # Os componentes agora recebem os caminhos do ExperimentManager
+        self.results_plotter = ResultsPlotter(output_dir=self.exp_manager.plots_dir)
+        self.segment_plotter = SegmentPlotter(output_dir=self.exp_manager.images_dir)
 
         # --- Configuration Flags ---
         # Read from BuildingConfig, providing defaults if attributes are missing
-        self.use_vector_input = getattr(BuildingConfig, 'USE_VECTOR_INPUT', False)
-        self.use_geometric_estimate = getattr(BuildingConfig, 'USE_GEOMETRIC_VOLUME_ESTIMATE', False)
+        self.use_vector_input = RunConfig.USE_VECTOR_INPUT
+        self.use_geometric_estimate = RunConfig.USE_GEOMETRIC_ESTIMATE
         self.analysis_mode = "Geometric Estimate" if self.use_geometric_estimate else "TQS Analysis"
-        self.num_target_samples = getattr(BuildingConfig, 'NUM_SAMPLES', 100)
-        self.train_split_ratio = getattr(BuildingConfig, 'TRAIN_SPLIT_RATIO', DEFAULT_TRAIN_SPLIT_RATIO)
-
+        self.num_target_samples = RunConfig.NUM_SAMPLES
+        
         # Print configuration summary
         print(f"Input Format:         {'Vector Lengths' if self.use_vector_input else 'Binary Grid'}")
         print(f"Analysis Mode:        {self.analysis_mode}")
         print(f"Target Valid Samples: {self.num_target_samples}")
-        print(f"Train/Test Split:     {self.train_split_ratio*100:.0f}% / {(1-self.train_split_ratio)*100:.0f}%")
 
         # --- Component Initialization ---
         self.tqs_manager = TQSModelManager(BuildingConfig.NAME)
-        # Consider passing NeuralNetConfig here if nn_manager needs it
         self.nn_manager = NeuralNetworkManager()
+        self.feature_pipeline = FeaturePipeline()  # A pipeline que farÃ¡ a normalizaÃ§Ã£o
+
         self.binary_processor = BinaryProcessor() # Used if not vector_input
         self.length_processor = LengthProcessor() # Used if vector_input
-        self.segment_plotter = SegmentPlotter() # Used for plotting configurations
-        self.results_plotter = ResultsPlotter() # Used for plotting NN results
 
         # --- State Variables ---
         self.current_iteration = 0 # Counts attempts to generate configurations
         self.generated_valid_configurations = [] # Stores List[Dict] for each valid config
-        self.normalization_params = None # To store NN normalization stats {'X_mean':..., 'X_std':..., 'y_mean':..., 'y_std':...}
 
         print("--- Optimizer Initialized Successfully ---")
+
 
     # -------------------------------------------------------------------------
     # Main Workflow Method
@@ -132,39 +140,24 @@ class BuildingOptimizer:
         print(f"\n--- Starting Optimization Workflow ---")
         start_time_total = time.time()
         try:
-            # 1. Load initial data
+            # --- FASE 1: GERAÃ‡ÃƒO DE DADOS ---
+            print("\n--- PHASE 1: DATA COLLECTION ---")
             initial_segments = self._load_initial_segments()
-
-            # 2. Generate training/testing samples by analyzing variations
+            # Este mÃ©todo retorna os dados brutos (nÃ£o normalizados)
             feature_vectors, output_values = self._collect_training_data(initial_segments)
-
-            # 3. Validate generated data before proceeding
             self._validate_collected_data(feature_vectors, output_values)
-            num_valid_samples = len(feature_vectors) # Get actual number generated
+            print(f"--- PHASE 1 COMPLETE: {len(feature_vectors)} samples generated. ---")
 
-            # 4. Split data into training and testing sets
-            train_features, test_features, train_outputs, test_outputs = train_test_split(
-            feature_vectors, output_values, train_size=self.train_split_ratio, shuffle=True, random_state=42
-            )
+            # --- FASE 2: TREINAMENTO E AVALIAÃ‡ÃƒO ---
+            print("\n--- PHASE 2: PIPELINE & MODEL TRAINING ---")
+            # Este novo mÃ©todo orquestra o treinamento da pipeline e do modelo
+            self._train_and_evaluate(feature_vectors, output_values)
 
-            # 5. Train the Neural Network model
-            self._train_model(train_features, train_outputs)
-
-            # 6. Make predictions on the test set
-            predictions = self._predict_on_test_set(test_features)
-
-            # 7. Evaluate predictions and Report Results
-            self._evaluate_and_report(predictions, test_outputs, test_features)
-
-            # 8. Plot Results (Comparison and Distribution)
-            self._plot_results(predictions, test_outputs, output_values)
-
-            # 9. Save Final Generated Configurations (if applicable)
+            # --- FASE 3: SALVAR RESULTADOS ADICIONAIS ---
             self._save_results()
 
             end_time_total = time.time()
-            print(f"\n--- Optimization Workflow Finished Successfully ({end_time_total - start_time_total:.2f}s) ---")
-
+            print(f"\n--- Workflow Finished Successfully ({end_time_total - start_time_total:.2f}s) ---")
         except Exception as e:
             end_time_total = time.time()
             print(f"\n--- ERROR DURING OPTIMIZATION WORKFLOW ({end_time_total - start_time_total:.2f}s) ---")
@@ -214,80 +207,7 @@ class BuildingOptimizer:
 
         print(f"Validation passed: {num_samples} samples collected.")
         print(f"Feature vector size: {num_features}")
-        print(f"Output vector size:  {num_outputs} ({'Concrete Only' if self.use_geometric_estimate else 'Steel & Concrete'})")
-
-
-    def _split_data(self, features: list, outputs: list) -> Tuple[list, list, list, list]:
-        """Splits the collected data into training and testing sets."""
-        print("\n--- Splitting Data into Train/Test Sets ---")
-        num_samples = len(features)
-        num_training_samples = int(self.train_split_ratio * num_samples)
-        num_test_samples = num_samples - num_training_samples
-
-        # Ensure at least one sample in each set if possible
-        if num_training_samples == 0 or num_test_samples == 0:
-            raise ValueError(
-                f"Cannot split {num_samples} samples with ratio {self.train_split_ratio}. "
-                "Need more samples or adjust split ratio for valid training and testing sets."
-            )
-
-        # Simple chronological split - for random split, use:
-        # from sklearn.model_selection import train_test_split
-        # train_features, test_features, train_outputs, test_outputs = train_test_split(
-        #     features, outputs, train_size=self.train_split_ratio, shuffle=True
-        # )
-        train_features = features[:num_training_samples]
-        train_outputs = outputs[:num_training_samples]
-        test_features = features[num_training_samples:]
-        test_outputs = outputs[num_training_samples:]
-
-        print(f"Total samples:    {num_samples}")
-        print(f"Training samples: {len(train_features)}")
-        print(f"Test samples:     {len(test_features)}")
-        return train_features, train_outputs, test_features, test_outputs
-
-
-    def _train_model(self, train_features: list, train_outputs: list):
-        """Trains the Neural Network model and stores normalization parameters."""
-        print("\n--- Training Neural Network ---")
-        # The nn_manager.train method should handle normalization internally
-        # and return the parameters used.
-        try:
-            # Pass training hyperparams from config if needed, e.g.,
-            # num_epochs = getattr(BuildingConfig, 'NUM_EPOCHS', 100) ...
-            self.normalization_params = self.nn_manager.train(
-                train_features, train_outputs #, num_epochs=..., batch_size=...
-            )
-            if self.normalization_params is None:
-                # This case should ideally be handled by an exception in nn_manager.train if it fails
-                print("Warning: NN training finished but did not return normalization parameters.")
-            else:
-                print("Normalization parameters stored.")
-            print("Training phase complete.")
-        except Exception as e:
-             print(f"CRITICAL ERROR during NN training: {e}")
-             # Decide how to handle training failure - maybe stop the whole process?
-             raise RuntimeError(f"Neural network training failed: {e}") from e
-
-
-    def _predict_on_test_set(self, test_features: list) -> list:
-        """Makes predictions on the test set using the trained model."""
-        print("\n--- Predicting on Test Set ---")
-        # The nn_manager.predict method should handle normalization internally
-        # using the stored self.normalization_params and return denormalized results.
-        if not test_features:
-             print("Warning: No test features to predict on.")
-             return []
-        try:
-            predictions = self.nn_manager.predict(test_features)
-            print(f"Generated {len(predictions)} predictions for the test set.")
-            if len(predictions) != len(test_features):
-                 print(f"Warning: Number of predictions ({len(predictions)}) does not match number of test samples ({len(test_features)}).")
-            return predictions
-        except Exception as e:
-            print(f"CRITICAL ERROR during NN prediction: {e}")
-            raise RuntimeError(f"Neural network prediction failed: {e}") from e
-
+        print(f"Output vector size:  {num_outputs} ({'Steel only' if num_outputs==1 else 'Steel & Concrete'})")
 
     def _save_results(self):
         """Saves generated configurations or other desired results."""
@@ -298,7 +218,7 @@ class BuildingOptimizer:
                 # Assumes save_final_vectors_to_csv uses CSV_FINAL_PATH from constants
                 # and is imported from utils.file_handler
                 save_final_vectors_to_csv(self.generated_valid_configurations)
-                print(f"Successfully saved {len(self.generated_valid_configurations)} configurations to {CSV_FINAL_PATH}.")
+                print(f"Successfully saved {len(self.generated_valid_configurations)} configurations to {FINAL_VECTORS_CSV_PATH}.")
             except Exception as e:
                 print(f"Error saving configuration CSV: {e}")
                 # Log to TQS console as well?
@@ -309,7 +229,6 @@ class BuildingOptimizer:
                 print("(Reason: Input mode is not vector-based)")
             elif not self.generated_valid_configurations:
                  print("(Reason: No valid configurations were generated/stored)")
-
 
     # -------------------------------------------------------------------------
     # Data Collection and Analysis Helper Methods
@@ -334,21 +253,27 @@ class BuildingOptimizer:
         output_values = []
         processed_valid_configs_count = 0
         # Calculate max attempts to prevent infinite loops if analysis consistently fails
-        max_iterations = self.num_target_samples * MAX_ITERATION_FACTOR
+        max_iterations = self.num_target_samples * RunConfig.MAX_ITERATION_FACTOR
 
         # --- Analyze Initial Configuration ---
         print(f"\nAnalyzing Initial Configuration (Attempt 0)...")
         analysis_start_time = time.time()
-        steel, concrete = self._get_analysis_results(initial_segments)
+        steel, concrete, column_polygons, beam_definitions = self._get_analysis_results(initial_segments)
         analysis_end_time = time.time()
         print(f"Initial analysis took {analysis_end_time - analysis_start_time:.2f}s")
 
         if concrete is not None: # Check if analysis (TQS or geometric) was successful
-            print(f"Initial Results -> Steel: {steel if steel is not None else 'N/A'} kgf, Concrete: {concrete:.4f} m³")
-            feature_vector = self._extract_feature_vector(initial_segments)
+            print(f"Initial Results -> Steel: {steel if steel is not None else 'N/A'} kgf, Concrete: {concrete:.4f} mÂ³")
+            feature_vector = self._extract_feature_vector(column_polygons, beam_definitions)
+            # Em _collect_training_data, logo apÃ³s extrair o feature_vector da amostra inicial
+            
+            print(f"[DEBUG MAIN] Vetor de Features da Semente: {np.array(feature_vector)}")
+
             feature_vectors.append(feature_vector)
-            # Use 0.0 for steel if geometric mode, otherwise use TQS result
-            output_values.append([steel if steel is not None else 0.0, concrete])
+            # Treinamento aÃ§o-only: requer resultado de aÃ§o (TQS). Geometric mode nÃ£o Ã© suportado aqui.
+            if steel is None:
+                raise RuntimeError("Steel is None. For steel-only training, use TQS mode (RunConfig.USE_GEOMETRIC_ESTIMATE=False).")
+            output_values.append([steel])
             if self.use_vector_input:
                  self.generated_valid_configurations.append(copy.deepcopy(initial_segments))
             processed_valid_configs_count += 1
@@ -369,7 +294,7 @@ class BuildingOptimizer:
             # 1. Generate a new variation
             print("Generating segment variation...")
             try:
-                 new_segments = self._generate_segment_variation(base_segments_for_variation)
+                 new_segments = self._generate_segment_variation(base_segments_for_variation, variation_strategy="random")
             except Exception as gen_e:
                  print(f"Error during segment variation generation: {gen_e}. Skipping iteration.")
                  continue # Skip to next iteration
@@ -383,19 +308,21 @@ class BuildingOptimizer:
 
             # 2. Get analysis results (TQS or Geometric)
             analysis_start_time = time.time()
-            steel, concrete = self._get_analysis_results(new_segments)
+            steel, concrete, column_polygons, beam_definitions = self._get_analysis_results(new_segments)
             analysis_end_time = time.time()
             print(f"Analysis took {analysis_end_time - analysis_start_time:.2f}s")
 
             # 3. Process results
             if concrete is not None: # Check if analysis was successful
                 processed_valid_configs_count += 1 # Increment valid sample count
-                print(f"Config {self.current_iteration} Results (Valid Sample {processed_valid_configs_count}) -> Steel: {steel if steel is not None else 'N/A'} kgf, Concrete: {concrete:.4f} m³")
-                feature_vector = self._extract_feature_vector(new_segments)
+                print(f"Config {self.current_iteration} Results (Valid Sample {processed_valid_configs_count}) -> Steel: {steel if steel is not None else 'N/A'} kgf, Concrete: {concrete:.4f} mÂ³")
+                feature_vector = self._extract_feature_vector(column_polygons, beam_definitions)
                 # Ensure feature vector extraction was successful
                 if feature_vector:
                      feature_vectors.append(feature_vector)
-                     output_values.append([steel if steel is not None else 0.0, concrete])
+                     if steel is None:
+                         raise RuntimeError("Steel is None. For steel-only training, use TQS mode (RunConfig.USE_GEOMETRIC_ESTIMATE=False).")
+                     output_values.append([steel])
                      if self.use_vector_input:
                          self.generated_valid_configurations.append(copy.deepcopy(new_segments))
                      # Optional: Update base segments if varying from last success
@@ -419,44 +346,129 @@ class BuildingOptimizer:
 
         return feature_vectors, output_values
 
+    def _train_and_evaluate(self, feature_vectors: list, output_values: list):
+        """
+        Orquestra o treinamento da pipeline, do modelo e a avaliaÃ§Ã£o final.
+        Este mÃ©todo substitui a lÃ³gica que estava espalhada em _train_model e _predict_on_test_set.
+        """
+        # 1. TREINAR A PIPELINE E TRANSFORMAR OS DADOS
+        print("\n[Step 1/5] Fitting pipeline and transforming data...")
+        X_scaled, y_scaled = self.feature_pipeline.fit_transform(feature_vectors, output_values)
+        print(f"[DEBUG MAIN] Vetor da Semente NORMALIZADO: {X_scaled[0]}")
+        # Salva a pipeline TREINADA usando o caminho do ExperimentManager
+        self.feature_pipeline.save(self.exp_manager.get_pipeline_path())
 
-    def _generate_segment_variation(self, base_segments: List[dict]) -> List[dict]:
+        # 2. TREINAR O MODELO NEURAL
+        # O nn_manager recebe os dados JÃ normalizados e retorna os conjuntos de teste (tambÃ©m normalizados).
+        print("\n[Step 2/5] Training the Neural Network...")
+        X_test_scaled, y_test_scaled = self.nn_manager.train(X_scaled, y_scaled)
+        
+        # Salva o modelo treinado usando o caminho do ExperimentManager
+        self.nn_manager.save_model(self.exp_manager.get_model_path())
+
+        # 3. FAZER PREDIÃ‡Ã•ES NO CONJUNTO DE TESTE
+        if X_test_scaled.size > 0:
+            print("\n[Step 3/5] Predicting on the test set...")
+            # O modelo recebe dados normalizados e retorna prediÃ§Ãµes normalizadas
+            predictions_scaled = self.nn_manager.predict(X_test_scaled)
+
+            # 4. DESNORMALIZAR OS RESULTADOS PARA AVALIAÃ‡ÃƒO
+            # Usamos a pipeline para converter prediÃ§Ãµes e valores reais de volta para a escala original (kgf, mÂ³).
+            print("\n[Step 4/5] Inverse-transforming predictions for evaluation...")
+            predictions_final = self.feature_pipeline.inverse_transform_outputs(predictions_scaled)
+            actuals_final = self.feature_pipeline.inverse_transform_outputs(y_test_scaled)
+
+            # 5. AVALIAR E PLOTAR OS RESULTADOS FINAIS
+            print("\n[Step 5/5] Evaluating and plotting final results...")
+            
+            # Converte para arrays numpy para facilitar a indexaÃ§Ã£o por coluna
+            actuals_np = np.array(actuals_final)
+            predictions_np = np.array(predictions_final)
+            
+            # DicionÃ¡rio para armazenar as mÃ©tricas calculadas
+            final_metrics = {}
+
+            # Calcula mÃ©tricas para Concreto (coluna de Ã­ndice 1)
+            # Calcula métricas para Concreto somente se houver 2 saídas
+            if predictions_np.shape[1] >= 2 and actuals_np.shape[1] >= 2:
+                r2_concrete = r2_score(actuals_np[:, 1], predictions_np[:, 1])
+                mae_concrete = mean_absolute_error(actuals_np[:, 1], predictions_np[:, 1])
+                final_metrics['concrete'] = {
+                    'r2_score': r2_concrete,
+                    'mean_absolute_error_m3': mae_concrete
+                }
+            else:
+                print("Concreto: métricas ignoradas (modelo com 1 saída).")
+            # Calcula mÃ©tricas para AÃ§o (coluna de Ã­ndice 0), se nÃ£o estiver em modo geomÃ©trico
+            if not self.use_geometric_estimate:
+                try:
+                    r2_steel = r2_score(actuals_np[:, 0], predictions_np[:, 0])
+                    mae_steel = mean_absolute_error(actuals_np[:, 0], predictions_np[:, 0])
+                    final_metrics['steel'] = {
+                        'r2_score': r2_steel,
+                        'mean_absolute_error_kgf': mae_steel
+                    }
+                except IndexError:
+                    print("Aviso: NÃ£o foi possÃ­vel calcular mÃ©tricas para o aÃ§o.")
+
+
+            self._evaluate_and_report(predictions_final.tolist(), actuals_final.tolist())
+            self._plot_results(predictions_final.tolist(), actuals_final.tolist(), output_values)
+                    # Loga os metadados com as mÃ©tricas calculadas
+
+            # Loga os metadados com as mÃ©tricas REAIS que acabamos de calcular
+            self.exp_manager.log_metadata({
+                "num_samples_trained": len(feature_vectors),
+                "num_test_samples": len(actuals_final),
+                "final_metrics": final_metrics # Passa o dicionÃ¡rio com os resultados
+            })
+        else:
+            print("Skipping prediction and evaluation (no test data available).")
+            self.exp_manager.log_metadata({
+                "num_samples_trained": len(feature_vectors),
+                "num_test_samples": 0,
+                "final_metrics": "No test data to evaluate."
+            })
+        
+
+
+
+    def _generate_segment_variation(self, base_segments: List[dict], variation_strategy: str = "random") -> List[dict]:
         """Generates a new variation of segments based on the input mode."""
         if self.use_vector_input:
             # length_processor.generate_variation should handle variation logic
             # It typically takes the segments to vary as input
-            return self.length_processor.generate_variation(base_segments)
+            return self.length_processor.generate_variation(base_segments, variation_strategy)
         else:
             # Ensure generate_new_binary_vector works as expected
             return generate_new_binary_vector(base_segments)
 
 
-    def _extract_feature_vector(self, segments: List[dict]) -> Optional[List[float]]:
+    def _extract_feature_vector(self, column_polygons: List[Polygon], beam_definitions: List[Dict]) -> Optional[List[float]]:
         """
-        Extracts the feature vector (input for NN) from a list of segments.
-        Returns None if extraction fails or segments are invalid.
+        Extracts the feature vector (input for NN) from the structure's geometry.
+        Args:
+            column_polygons: List of Shapely Polygons for columns.
+            beam_definitions: List of dictionaries defining beams.
+        Returns:
+            A list of floats representing the feature vector, or None if extraction fails.
         """
-        if not segments:
-             print("Warning: Cannot extract features from empty segment list.")
-             return None
+        if not column_polygons:
+            print("Warning: Cannot extract features from empty column polygon list.")
+            return None
         try:
-            if self.use_vector_input:
-                # Extract length, handle potential missing key with default 0.0
-                features = [seg.get("length", 0.0) for seg in segments]
-            else:
-                # Extract binary flag, handle potential missing key with default 0
-                features = [float(seg.get("binary", 0)) for seg in segments] # Ensure float type
-            # Basic validation
+            feature_engineer = FeatureEngineer(column_polygons, beam_definitions)
+            features = feature_engineer.extract_features()
             if not features:
-                 print("Warning: Extracted feature vector is empty.")
-                 return None
+                print("Warning: Extracted feature vector is empty.")
+                return None
             return features
-        except (TypeError, KeyError, AttributeError) as e:
-             print(f"Error extracting feature vector: {e}. Segment data: {segments}")
-             return None
+        except Exception as e:
+            print(f"Error extracting feature vector: {e}. Traceback: {traceback.format_exc()}")
+            return None
 
 
-    def _get_analysis_results(self, segments: List[dict]) -> Tuple[Optional[float], Optional[float]]:
+    def _get_analysis_results(self, segments: List[dict]) -> Tuple[Optional[float], Optional[float], Optional[List[Polygon]], Optional[List[Dict]]]:
         """
         Performs structural analysis based on the configured mode (Geometric or TQS).
 
@@ -464,8 +476,8 @@ class BuildingOptimizer:
             segments: The list of segment dictionaries for the configuration.
 
         Returns:
-            A tuple (steel_kgf, concrete_m3). Steel is None in geometric mode.
-            Returns (None, None) if analysis fails.
+            A tuple (steel_kgf, concrete_m3, column_polygons, beam_definitions).
+            Steel is None in geometric mode. Returns (None, None, None, None) if analysis fails.
         """
         print(f"Performing analysis using: {self.analysis_mode}")
         if self.use_geometric_estimate:
@@ -491,14 +503,14 @@ class BuildingOptimizer:
 
                 print("  [Geometric] Step 2: Calculating total concrete volume...")
                 concrete_volume = get_geometric_concrete_volume(column_polygons, beam_definitions)
-                print(f"   Geometric Concrete Volume Estimated: {concrete_volume:.4f} m³")
-                return None, concrete_volume # Steel is None
+                print(f"   Geometric Concrete Volume Estimated: {concrete_volume:.4f} mÂ³")
+                return None, concrete_volume, column_polygons, beam_definitions # Steel is None
                 
 
             except Exception as e:
                 print(f"   Error during geometric calculation: {e}")
                 TQSUtil.writef(f"Error during geometric calculation: {e}")
-                return None, None # Indicate failure
+                return None, None, None, None # Indicate failure
         else:
             # --- TQS Analysis Mode ---
             print("  [TQS] Starting full TQS analysis pipeline...")
@@ -508,14 +520,19 @@ class BuildingOptimizer:
             if model_was_created:
                 # This second function runs the analysis and extracts results.
                 steel_kgf, concrete_m3 = self._execute_tqs_analysis_and_get_results(segments)
-            
+                # We need to get the geometry that was used for the analysis
+                if self.use_vector_input:
+                    column_polygons, beam_definitions = self.length_processor.process_segments(segments)
+                else:
+                    column_polygons, beam_definitions = self.binary_processor.process_segments(segments)
+
                 # Return the results, which could be (None, None) if execution failed.
-                return steel_kgf, concrete_m3
+                return steel_kgf, concrete_m3, column_polygons, beam_definitions
 
             else:
                 # If model creation failed, abort the process for this sample.
                 print("  [TQS] Error: Aborting analysis because model creation failed.")
-                return None, None
+                return None, None, None, None
 
 
     def _create_tqs_structural_model(self, segments: List[dict]) -> bool:
@@ -587,7 +604,7 @@ class BuildingOptimizer:
             print("      TQS global processing command issued.")
 
             # 4. Extract results (Add delay for file writing if needed)
-            tqs_output_file = BuildingConfig.RESULTS_PATH
+            tqs_output_file = BuildingConfig.TQS_RESULTS_FILE
             print(f"      Step 4: Extracting results from {tqs_output_file}...")
             # Optional delay: If RunModel is async, TQS might need time to write the file.
             timeout = 20  # seconds
@@ -616,7 +633,7 @@ class BuildingOptimizer:
                  return None, None
 
             end_time_tqs = time.time()
-            print(f"   TQS Analysis successful ({end_time_tqs - start_time_exec:.2f}s). Steel: {steel_kgf:.2f} kgf, Concrete: {concrete_m3:.3f} m³")
+            print(f"   TQS Analysis successful ({end_time_tqs - start_time_exec:.2f}s). Steel: {steel_kgf:.2f} kgf, Concrete: {concrete_m3:.3f} mÂ³")
             return steel_kgf, concrete_m3 
         
         except Exception as e:
@@ -631,14 +648,11 @@ class BuildingOptimizer:
     # Evaluation and Plotting Helper Methods (Placeholder implementations)
     # -------------------------------------------------------------------------
 
-    def _evaluate_and_report(self, predictions: List[List[float]], actual_values: List[List[float]], test_features: List[List[float]]):
+    def _evaluate_and_report(self, predictions: List[List[float]], actual_values: List[List[float]]):
         """
-        Calculates and prints evaluation metrics for the test set predictions.
-        (Implementation adapted from previous version, ensures correct handling)
+        Calculates and prints evaluation metrics (RÂ², MAE, percentage error) for the test set predictions.
         """
         print("\n--- Test Set Evaluation ---")
-        # TODO: Ensure predictions and actual_values are denormalized here if normalization was used.
-        #       The nn_manager.predict should ideally return denormalized values.
 
         if len(predictions) == 0 or len(actual_values) == 0:
             print("Evaluation skipped: No predictions or actual values available.")
@@ -649,11 +663,39 @@ class BuildingOptimizer:
              min_len = min(len(predictions), len(actual_values))
              predictions = predictions[:min_len]
              actual_values = actual_values[:min_len]
-             # test_features = test_features[:min_len] # Also truncate features if needed
 
         num_test_samples = len(actual_values)
-        predicts_steel = not self.use_geometric_estimate
+        predicts_steel = self.nn_manager.is_trained and not self.use_geometric_estimate
 
+        # Extract material-specific lists for easier calculation
+        # Extract material-specific lists for easier calculation
+        has_concrete = all(len(p) >= 2 for p in predictions) and all(len(a) >= 2 for a in actual_values)
+        concrete_predictions = [p[1] for p in predictions] if has_concrete else []
+        concrete_actuals = [a[1] for a in actual_values] if has_concrete else []
+        # Concrete Metrics
+        if len(concrete_actuals) > 0:
+            r2_concrete = r2_score(concrete_actuals, concrete_predictions)
+            mae_concrete = mean_absolute_error(concrete_actuals, concrete_predictions)
+            print(f"Concrete RÂ²: {r2_concrete:.4f}")
+            print(f"Concrete MAE: {mae_concrete:.4f} mÂ³")
+        else:
+            print("Concrete metrics not calculated (single-output model or no data).")
+
+        # Steel Metrics (if applicable)
+        if predicts_steel:
+            steel_predictions = [p[0] for p in predictions]
+            steel_actuals = [a[0] for a in actual_values]
+            if len(steel_actuals) > 0:
+                r2_steel = r2_score(steel_actuals, steel_predictions)
+                mae_steel = mean_absolute_error(steel_actuals, steel_predictions)
+                print(f"Steel RÂ²: {r2_steel:.4f}")
+                print(f"Steel MAE: {mae_steel:.4f} kgf")
+            else:
+                print("Steel metrics not calculated (no data).")
+        else:
+            print("Steel metrics not applicable (Geometric mode or model not trained for steel). ")
+
+        print("\n--- Detailed Sample Comparison (Test Set) ---")
         total_steel_error_perc = 0.0
         total_concrete_error_perc = 0.0
         valid_steel_samples = 0
@@ -675,7 +717,7 @@ class BuildingOptimizer:
             print(f"Test Sample {i+1}/{num_test_samples}:")
 
             # Concrete Evaluation
-            print(f"  Concrete -> Predicted: {concrete_pred:>8.2f} m³ | Actual: {concrete_actual:>8.2f} m³")
+            print(f"  Concrete -> Predicted: {concrete_pred:>8.2f} mÂ³ | Actual: {concrete_actual:>8.2f} mÂ³")
             if abs(concrete_actual) > 1e-6:
                 concrete_err = abs(concrete_pred - concrete_actual) / concrete_actual * 100
                 print(f"                 Error: {concrete_err:>8.2f}%")
@@ -683,7 +725,7 @@ class BuildingOptimizer:
                 valid_concrete_samples += 1
             else:
                 absolute_diff = abs(concrete_pred - concrete_actual)
-                print(f"                 Actual is ~0. Absolute Difference: {absolute_diff:.4f} m³")
+                print(f"                 Actual is ~0. Absolute Difference: {absolute_diff:.4f} mÂ³")
 
             # Steel Evaluation (if applicable)
             if predicts_steel:
@@ -720,20 +762,24 @@ class BuildingOptimizer:
     def _plot_results(self, predictions: List[List[float]], actual_values: List[List[float]], all_output_values: List[List[float]]):
         """
         Generates comparison (predicted vs actual) and distribution plots.
-        (Implementation adapted from previous version)
         """
         print("\n--- Generating Result Plots ---")
-        # TODO: Ensure predictions and actual_values are denormalized before plotting.
         try:
             # Plot comparison (Predicted vs Actual for Test Set)
-            if not self.use_geometric_estimate:
+            # Only plot steel if the model is trained and not in geometric estimate mode
+            if self.nn_manager.is_trained and not self.use_geometric_estimate:
                  print("   Plotting Steel comparison...")
                  self.results_plotter.plot_comparison(predictions, actual_values, 'steel')
             else:
-                 print("   Skipping Steel comparison plot (Geometric mode).")
+                 print("   Skipping Steel comparison plot (Geometric mode or model not trained for steel). ")
 
-            print("   Plotting Concrete comparison...")
-            self.results_plotter.plot_comparison(predictions, actual_values, 'concrete')
+            # Plot concrete only if model has 2 outputs
+            has_conc = any(len(v) >= 2 for v in actual_values) and any(len(v) >= 2 for v in predictions)
+            if has_conc:
+                print("   Plotting Concrete comparison...")
+                self.results_plotter.plot_comparison(predictions, actual_values, 'concrete')
+            else:
+                print("   Skipping Concrete comparison plot (single-output model).")
 
             # Plot distribution of all collected output values
             if all_output_values:
@@ -743,9 +789,14 @@ class BuildingOptimizer:
                  print("   Skipping distribution plot (no overall output values available).")
 
             print("Plots generated successfully (check results/plots directory).")
+            # Plot residuals
+            # Residuals: plot concrete only if model has 2 outputs
+            if any(len(v) >= 2 for v in actual_values) and any(len(v) >= 2 for v in predictions):
+                self.results_plotter.plot_residuals(predictions, actual_values, 'concrete')
+            if self.nn_manager.is_trained and not self.use_geometric_estimate:
+                self.results_plotter.plot_residuals(predictions, actual_values, 'steel')
         except Exception as e:
             print(f"Warning: Plot generation failed: {str(e)}")
-
 
 # =============================================================================
 # Script Execution Entry Point
@@ -753,31 +804,29 @@ class BuildingOptimizer:
 
 def main():
     """Main function to run the building optimization process."""
-    print("===========================================")
-    print("   Starting Building Optimization Script   ")
-    print(f"   Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-    print("===========================================")
+
+    # 1. Inicializa o gerenciador de experimentos.
+    #    Ele usarÃ¡ o diretÃ³rio definido em config/paths.py.
+    #    VocÃª pode dar um nome descritivo para a execuÃ§Ã£o.
+    exp_manager = ExperimentManager(
+        base_dir=paths.EXPERIMENTS_DIR, 
+        run_name="Treino_com_1300_amostras_e_BN"
+    )
+
+    # (Opcional, mas recomendado) Configurar o logging para salvar no diretÃ³rio do experimento
+    # setup_logging(log_dir=exp_manager.run_dir)
 
     try:
-        # --- Configuration should be set in config/settings.py ---
-        # Example: Ensure these lines are in your config/settings.py:
-        # class BuildingConfig:
-        #     NAME = "OptimizedBuilding"
-        #     USE_VECTOR_INPUT = True
-        #     USE_GEOMETRIC_VOLUME_ESTIMATE = False # Set True for fast mode
-        #     NUM_SAMPLES = 100 # Target number of *valid* samples
-        #     TRAIN_SPLIT_RATIO = 0.8
-        #     RESULTS_PATH = Path(r"C:\TQS\OptimizedBuilding\ESPACIAL\RESDES.HTM") # Adjust TQS path
-        #     # Add other necessary paths and parameters from your original config
-        #
-        # class NeuralNetConfig: # If needed by nn_manager
-        #     INPUT_SIZE = 24 # Or determine dynamically
-        #     HIDDEN_SIZE = 128
-        #     OUTPUT_SIZE = 2
-        # ----------------------------------------------------------
-
-        optimizer = BuildingOptimizer()
+        # 2. Instancia o otimizador, passando o gerenciador de experimento
+        optimizer = BuildingOptimizer(exp_manager)
+        
+        # 3. Executa o fluxo de otimizaÃ§Ã£o
         optimizer.run_optimization()
+        
+        logging.info(f"ExecuÃ§Ã£o {exp_manager.run_dir.name} finalizada com sucesso.")
+
+    except Exception as e:
+        logging.error(f"ExecuÃ§Ã£o {exp_manager.run_dir.name} falhou.", exc_info=True)
 
     except Exception as main_error:
          print("\n--- A CRITICAL ERROR OCCURRED IN MAIN EXECUTION ---")

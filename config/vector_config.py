@@ -12,4 +12,4 @@ class VectorConfig:
     ]
     
     # CSV column names
-    VECTOR_CSV_COLUMNS = ["x", "y", "dx", "dy", "length"]
+    VECTOR_CSV_COLUMNS = ["x", "y", "dx", "dy", "length", "maxlength"]

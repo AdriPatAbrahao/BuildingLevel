@@ -1,6 +1,6 @@
 import csv
 import locale
-from config.constants import  CSV_FINAL_PATH
+from config.paths import FINAL_VECTORS_CSV_PATH
 from typing import List, Dict
 from contextlib import contextmanager
 
@@ -27,7 +27,7 @@ def save_final_vectors_to_csv(configurations: List[List[Dict]]):
                                           uma lista de dicionários de segmentos
     """
 
-    output_path = CSV_FINAL_PATH
+    output_path = FINAL_VECTORS_CSV_PATH
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     if not configurations:

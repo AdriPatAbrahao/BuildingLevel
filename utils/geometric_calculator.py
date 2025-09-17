@@ -2,7 +2,7 @@
 
 import numpy as np
 from typing import List, Dict
-from shapely.geometry import Polygon
+from shapely.geometry import Polygon, LineString, MultiLineString
 
 # --- Constantes ---
 # Fator de conversão
@@ -82,7 +82,7 @@ def calculate_beams_geometric_volume(beam_definitions: List[Dict]) -> float:
 
         if node1 and node2:
             # Calcula o comprimento da viga em cm usando a distância euclidiana
-            length_cm = np.sqrt((node2[0] - node1[0])**2 + (node2[1] - node1[1])**2)
+            length_cm = np.sqrt((node2[0] - node1[0])**2 + (node2[1] - node1[1])**2) - 2*BEAM_WIDTH_CM
 
             if length_cm > 0:
                 length_m = length_cm * CM_TO_M
@@ -98,7 +98,52 @@ def calculate_beams_geometric_volume(beam_definitions: List[Dict]) -> float:
     return total_beam_volume_m3
 
 
-def get_geometric_concrete_volume(column_pollygon: List[Dict], beam_definitions: List[Dict]) -> float:
+def calculate_beams_geometric_volume_with_subtractions(beam_definitions: List[Dict], column_polygons: List[Polygon]) -> float:
+    """
+    Calculates beam volume subtracting the portions that run inside columns.
+
+    - Computes beam centerline length in cm
+    - Subtracts the total length of intersections between the centerline and each column polygon
+    - Converts effective length to meters and multiplies by beam cross-section (BxH)
+    """
+    total_beam_volume_m3 = 0.0
+    if not beam_definitions:
+        return 0.0
+
+    for beam in beam_definitions:
+        node1 = beam.get("node_1")
+        node2 = beam.get("node_2")
+        if not (node1 and node2):
+            continue
+
+        # Base length (cm)
+        length_cm = float(np.sqrt((node2[0] - node1[0])**2 + (node2[1] - node1[1])**2))
+
+        subtract_cm = 0.0
+        try:
+            beam_line = LineString([node1, node2])
+            for col in (column_polygons or []):
+                inter = beam_line.intersection(col)
+                if inter.is_empty:
+                    continue
+                if isinstance(inter, LineString):
+                    subtract_cm += float(inter.length)
+                elif isinstance(inter, MultiLineString):
+                    subtract_cm += float(sum(seg.length for seg in inter.geoms))
+        except Exception:
+            pass
+
+        effective_cm = max(length_cm - subtract_cm, 0.0)
+        if effective_cm <= 0.0:
+            continue
+
+        length_m = effective_cm * CM_TO_M
+        volume_m3 = length_m * BEAM_WIDTH_M * BEAM_HEIGHT_M
+        total_beam_volume_m3 += volume_m3
+
+    return total_beam_volume_m3
+
+def get_geometric_concrete_volume(column_polygons: List[Dict], beam_definitions: List[Dict]) -> float:
     """
     Calcula o volume geométrico total estimado de concreto para pilares e vigas.
 
@@ -107,14 +152,18 @@ def get_geometric_concrete_volume(column_pollygon: List[Dict], beam_definitions:
     maior que o volume calculado por softwares como o TQS.
 
     Args:
-        column_pollygon (List[Dict]): Lista de dicionários dos poligons de pilares.
+        column_polygons (List[Dict]): Lista de dicionários dos polígonos de pilares.
         beam_definitions (List[Dict]): Lista de dicionários das definições de vigas.
 
     Returns:
         float: Volume total estimado de concreto em metros cúbicos (m³).
     """
-    volume_pilares = calculate_column_geometric_volume(column_pollygon)
-    volume_vigas = calculate_beams_geometric_volume(beam_definitions)
+    # Validação de entrada para garantir que os argumentos são listas
+    if not isinstance(column_polygons, list) or not isinstance(beam_definitions, list):
+        raise ValueError("Entradas para 'column_polygons' e 'beam_definitions' devem ser listas.")
+
+    volume_pilares = calculate_column_geometric_volume(column_polygons)
+    volume_vigas = calculate_beams_geometric_volume_with_subtractions(beam_definitions, column_polygons)
 
     print(f"[Geométrico] Vol. Pilares: {volume_pilares:.4f} m³ | Vol. Vigas: {volume_vigas:.4f} m³")
 

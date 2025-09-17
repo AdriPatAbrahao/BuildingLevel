@@ -1,6 +1,5 @@
 # Em algorithm/geometry_utils.py (ou algorithm/polygon_processor.py)
 
-from config.constants import BEAM_THICKNESS
 from shapely.geometry import Polygon, LinearRing
 import pyclipper 
 from typing import List, Dict, Tuple, Set, Optional

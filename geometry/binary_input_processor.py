@@ -5,7 +5,8 @@ import csv
 from typing import List, Tuple, Dict, Set, Optional # Adicionado Optional
 from shapely.geometry import Polygon
 from .geometry_utils import GeometryProcessor # Importa sua classe de utilidades geométricas
-from config.constants import CSV_PATH, BEAM_THICKNESS # CSV_PATH para o arquivo binário
+from config.constants import DEFAULT_BEAM_WIDTH_CM
+from config.paths import SEED_BINARY_CSV
 
 class BinaryProcessor: # Renomeado de SegmentProcessor para BinaryProcessor
     """
@@ -18,10 +19,10 @@ class BinaryProcessor: # Renomeado de SegmentProcessor para BinaryProcessor
         # beam_thickness aqui é a espessura total para engrossar segmentos
         # para detecção de conexão e criação de polígonos.
         # A função create_rectangles_from_segments espera half_thickness.
-        self.element_thickness = BEAM_THICKNESS
+        self.element_thickness = DEFAULT_BEAM_WIDTH_CM
         # print(f"BinaryProcessor initialized with element_thickness: {self.element_thickness} cm")
 
-    def read_binary_from_csv(self, csv_file_path: str = CSV_PATH) -> List[Dict]:
+    def read_binary_from_csv(self, csv_file_path: str = SEED_BINARY_CSV) -> List[Dict]:
         """
         Reads segments from a CSV file specific to the binary grid format.
         CSV should have columns: x1, y1, x2, y2, binary_flag (ou 'binario').
@@ -78,7 +79,7 @@ class BinaryProcessor: # Renomeado de SegmentProcessor para BinaryProcessor
             return {}
 
         # Chama a função utilitária estática de GeometryProcessor
-        # Passa a espessura TOTAL do elemento (BEAM_THICKNESS)
+        # Passa a espessura TOTAL do elemento
         return GeometryProcessor.build_graph_from_polygon_intersections(
             segments_to_process,
             original_indices,

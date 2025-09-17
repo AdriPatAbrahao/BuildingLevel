@@ -1,0 +1,77 @@
+
+from typing import List, Dict
+from shapely.geometry import Polygon, LineString
+import numpy as np
+from config.constants import BEAM_THICKNESS, DEFAULT_BEAM_HEIGHT_CM
+import shapely
+
+print(f"Shapely version in feature_engineer.py: {shapely.__version__}")
+
+class FeatureEngineer:
+    """
+    Extracts a rich feature set from the geometric properties of the structure.
+    """
+    def __init__(self, column_polygons: List[Polygon], beam_definitions: List[Dict]):
+        self.column_polygons = column_polygons
+        self.beam_definitions = beam_definitions
+
+    def extract_features(self) -> List[float]:
+        """
+        Computes all engineered features and returns them as a single vector.
+        """
+        features = []
+        
+        # Column features
+        column_areas = [p.area for p in self.column_polygons]
+        total_column_area = sum(column_areas)
+        num_columns = len(self.column_polygons)
+        
+        features.extend([
+            total_column_area,
+            num_columns,
+            np.mean(column_areas) if column_areas else 0,
+            np.std(column_areas) if column_areas else 0,
+            min(column_areas) if column_areas else 0,
+            max(column_areas) if column_areas else 0,
+        ])
+        
+        # Beam features
+        beam_lengths = [LineString([b['node_1'], b['node_2']]).length for b in self.beam_definitions]
+        total_beam_length = sum(beam_lengths)
+        total_beam_volume = total_beam_length * BEAM_THICKNESS * DEFAULT_BEAM_HEIGHT_CM
+
+        features.extend([
+            total_beam_length,
+            total_beam_volume,
+        ])
+
+        # Inertia features
+        moments_of_inertia_xx = []
+        moments_of_inertia_yy = []
+
+        for p in self.column_polygons:
+            print(f"Type of polygon object: {type(p)}")
+            print(f"Dir of polygon object: {dir(p)}")
+            if hasattr(p, 'moment_of_inertia'):
+                try:
+                    # Call moment_of_inertia as a method, it returns (Ixx, Iyy, Ixy, centroid_x, centroid_y)
+                    moi_tuple = p.moment_of_inertia()
+                    moments_of_inertia_xx.append(moi_tuple[0])
+                    moments_of_inertia_yy.append(moi_tuple[1])
+                except Exception as e:
+                    print(f"Warning: Error calculating moment of inertia for a polygon: {e}. Appending 0.")
+                    moments_of_inertia_xx.append(0.0)
+                    moments_of_inertia_yy.append(0.0)
+            else:
+                print("Warning: 'moment_of_inertia' method not found on Polygon object. Appending 0 for inertia features.")
+                moments_of_inertia_xx.append(0.0)
+                moments_of_inertia_yy.append(0.0)
+
+        features.extend([
+            np.sum(moments_of_inertia_xx),
+            np.sum(moments_of_inertia_yy),
+            np.mean(moments_of_inertia_xx) if moments_of_inertia_xx else 0,
+            np.mean(moments_of_inertia_yy) if moments_of_inertia_yy else 0,
+        ])
+        
+        return features

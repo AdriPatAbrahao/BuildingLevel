@@ -5,17 +5,15 @@ import os
 from tqs_interface.geometry import Segment
 
 class SegmentPlotter:
-    def __init__(self):
+    def __init__(self, output_dir: Path):
         """Initialize plotter with output directory"""
         self.colors = {1: 'black', 0: 'grey'}
         self.line_width = 2
         
-        # Get project root directory and create images folder
-        self.project_root = Path(__file__).parent.parent
-        self.output_dir = self.project_root / "images"
+        self.output_dir = output_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
-        print(f"Images will be saved to: {self.output_dir}")  # Debug print
+        print(f"SegmentPlotter configurado para salvar imagens em: {self.output_dir.resolve()}")
         
     def plot_segments(self, segments: List[Dict], iteration: int, steel: float = None, concrete: float = None, show: bool = False) -> None:
         """Plot segments configuration with material quantities"""

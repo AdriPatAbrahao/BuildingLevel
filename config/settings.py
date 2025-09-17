@@ -1,24 +1,42 @@
-from pathlib import Path
+from . import paths  # Importa o módulo de caminhos
+from . import constants # Importa o módulo de constantes
 
 class BuildingConfig:
     NAME = "OptimizedBuilding"
-    COORDINATES = (
-        (180., 105.), (540., 105.),
-        (180., 615.), (540., 615.),
-    )
-    NUM_SAMPLES = 20 # Increased to 100 buildings
-    IMAGE_PATH = "images" 
-    RESULTS_PATH = Path(r"C:\TQS\OptimizedBuilding\ESPACIAL\RESDES.HTM")
-    USE_VECTOR_INPUT = True  # Flag to switch between input methods
-    USE_GEOMETRIC_VOLUME_ESTIMATE = False # Mude para False para usar TQS
+    BUILDING_COORDINATES = constants.DEFAULT_BUILDING_COORDINATES
+    SLAB_COORDINATES = constants.DEFAULT_SLAB_COORDINATES
 
-    # Output directories
-    RESULTS_DIR = Path("results")
-    PLOTS_DIR = RESULTS_DIR / "plots"
+    TQS_RESULTS_FILE = paths.TQS_OUTPUT_DIR / NAME / "ESPACIAL" / "RESDES.HTM"
+
+class RunConfig:
+    """ Configurações que controlam COMO o script executa. """
+    # --- Controle de Fluxo ---
+    USE_VECTOR_INPUT = True
+    USE_GEOMETRIC_ESTIMATE = False
     
-    # Ensure directories exist on startup
-    RESULTS_DIR.mkdir(exist_ok=True)
-    PLOTS_DIR.mkdir(exist_ok=True)
+    # --- Geração de Dados ---
+    NUM_SAMPLES = 1000
+    MAX_ITERATION_FACTOR = 2 # Multiplicador para tentativas de geração
+
+
+class NeuralNetConfig:
+    """ Hiperparâmetros e arquitetura da Rede Neural. """
+    # --- Arquitetura ---
+    INPUT_SIZE = 24  # Idealmente, deveria ser determinado dinamicamente
+    HIDDEN_LAYERS = [128, 128, 64]
+    DROPOUT_RATE = 0.2
+    OUTPUT_SIZE = 2
+
+    # --- Treinamento ---
+    LEARNING_RATE = 0.001
+    NUM_EPOCHS = 500
+    BATCH_SIZE = 32
+
+    # --- Divisão de Dados e Validação ---
+    TEST_SPLIT_RATIO = 0.15
+    VALIDATION_SPLIT_RATIO = 0.2
+    EARLY_STOPPING_PATIENCE = 50
+
     
     
 

@@ -1,37 +1,59 @@
 from typing import List, Tuple, Dict, Set
 import pandas as pd
 from shapely.geometry import LineString, Polygon
-from config.constants import BEAM_THICKNESS, VECTOR_CSV_PATH
+from config.constants import DEFAULT_BEAM_WIDTH_CM
+from config.paths import SEED_VECTOR_CSV
 from config.vector_config import VectorConfig
 import random
 import copy
 import numpy as np
 from .geometry_utils import GeometryProcessor
+from pathlib import Path
 
 class LengthProcessor:
-    def __init__(self):
+    def __init__(self, csv_filepath: str = None):
         self.wall_segments = VectorConfig.WALL_SEGMENTS
+        if csv_filepath:
+            self.csv_path = Path(csv_filepath)
+        else:
+            self.csv_path = SEED_VECTOR_CSV
+        print(f"LengthProcessor inicializado para ler o arquivo: '{self.csv_path}'")
         
     def read_length_from_csv(self) -> List[dict]:
         """Reads column vectors from CSV and converts to segments"""
         # Força o pandas a usar ponto como separador decimal
-        df = pd.read_csv(VECTOR_CSV_PATH, delimiter=';', decimal=',')
+        #if not self.csv_path.exists():
+        #    print(f"ERRO: Arquivo CSV não encontrado em '{self.csv_path}'")
+        #    return [] # Retorna lista vazia se o arquivo não existe
+        
         segments = []
-        for _, row in df.iterrows():
-            x = float(row["x"])
-            y = float(row["y"])
-            dx = float(row["dx"])
-            dy = float(row["dy"])
-            length = float(row["length"])
-            maxlength = float(row["maxlength"]) if "maxlength" in row and not pd.isna(row["maxlength"]) else None
+        try:
+            df = pd.read_csv(self.csv_path, delimiter=';', decimal=',')
 
-            segments.append({
+            for _, row in df.iterrows():
+                x = float(row["x"])
+                y = float(row["y"])
+                dx = float(row["dx"])
+                dy = float(row["dy"])
+                length = float(row["length"])
+                maxlength = float(row["maxlength"]) if "maxlength" in row and not pd.isna(row["maxlength"]) else None
+
+                segments.append({
                 "start": (x, y),
                 "end": (x + dx * length, y + dy * length),
                 "length": length,
                 "maxlength": maxlength,
                 "binary": 1
             })
+                
+        except FileNotFoundError:
+            print(f"Erro: Arquivo CSV não encontrado em '{self.csv_path}'")
+            return [] # Retorna lista vazia em caso de erro de arquivo não encontrado
+        except Exception as e:
+            # Captura outros erros de parsing ou processamento
+            print(f"Erro ao ler ou processar o CSV/buffer em LengthProcessor: {e}")
+            return [] 
+            
         return segments
     
     def process_segments(self, segments: List[dict] = None) -> Tuple[List[Polygon], List[dict]]:
@@ -46,7 +68,7 @@ class LengthProcessor:
         # Create polygons for column groups
         column_polygons = []
         for group in column_groups:
-            rectangles = GeometryProcessor.create_rectangles_from_segments(group, BEAM_THICKNESS / 2.0) # Passando half_thickness
+            rectangles = GeometryProcessor.create_rectangles_from_segments(group, DEFAULT_BEAM_WIDTH_CM  / 2.0) # Passando half_thickness
             polygons = GeometryProcessor.convert_vertices_to_polygons(rectangles)
             united = GeometryProcessor.union_polygons(polygons)
             column_polygons.extend(united)
@@ -72,7 +94,7 @@ class LengthProcessor:
         return GeometryProcessor.build_graph_from_polygon_intersections(
             segments_to_process,
             original_indices,
-            BEAM_THICKNESS    # Passa a espessura TOTAL do elemento
+            DEFAULT_BEAM_WIDTH_CM    # Passa a espessura TOTAL do elemento
         )
     
     def _find_beam_locations(self, column_polygons: List[Polygon]) -> List[dict]:
@@ -88,7 +110,7 @@ class LengthProcessor:
             
             # Find all column intersections with this wall
             for column in column_polygons:
-                if column.distance(wall_line) < BEAM_THICKNESS:
+                if column.distance(wall_line) < DEFAULT_BEAM_WIDTH_CM:
                     # Get column boundaries instead of centroid
                     minx, miny, maxx, maxy = column.bounds
                     
@@ -131,49 +153,55 @@ class LengthProcessor:
         
         return beam_groups
 
-    def generate_variation(self, segments: List[dict]) -> List[dict]:
+    def generate_variation(self, segments: List[dict], variation_strategy: str = "random") -> List[dict]:
         new_segments = copy.deepcopy(segments)
         made_changes = False
-        max_attempts = 10
-        attempt = 0
         step = 5.0 # Variação em múltiplos de 5 cm
-    
-        while not made_changes and attempt < max_attempts:
-            for segment in new_segments:
-                original_length = segment["length"]
-                max_length = segment.get("maxlength")
-                
-                # Só varia se existe maxlength e é maior que o original
-                if max_length is not None and max_length > original_length:
-                    if random.random() < 0.4:  # 40% chance de variar
-                        variation = max_length - original_length
-                        max_steps = int(variation / step)
 
-                        if max_steps > 0:
-                            num_steps = random.randint(1, max_steps)
-                            new_length = original_length + (num_steps * step)
-                        
-                            self._update_segment_length(segment, new_length)
-                            made_changes = True    
-            attempt += 1
-    
-        if not made_changes:
-            # Se nenhum segmento foi alterado, força pelo menos um
-            valid_segments = [s for s in new_segments if s.get("maxlength") is not None and s["maxlength"] > s["length"]]
-            if valid_segments:
-                segment = random.choice(valid_segments)
-                original_length = segment["length"]
-                max_length = segment["maxlength"]
+        if variation_strategy == "random":
+            max_attempts = 10
+            attempt = 0
+            while not made_changes and attempt < max_attempts:
+                for segment in new_segments:
+                    original_length = segment["length"]
+                    max_length = segment.get("maxlength")
+                    
+                    # Só varia se existe maxlength e é maior que o original
+                    if max_length is not None and max_length > original_length:
+                        if random.random() < 0.4:  # 40% chance de variar
+                            variation = max_length - original_length
+                            max_steps = int(variation / step)
 
-                max_variation = max_length - original_length
-                max_steps = int(max_variation / step)
+                            if max_steps > 0:
+                                num_steps = random.randint(1, max_steps)
+                                new_length = original_length + (num_steps * step)
+                            
+                                self._update_segment_length(segment, new_length)
+                                made_changes = True    
+                attempt += 1
+        
+            if not made_changes:
+                # Se nenhum segmento foi alterado, força pelo menos um
+                valid_segments = [s for s in new_segments if s.get("maxlength") is not None and s["maxlength"] > s["length"]]
+                if valid_segments:
+                    segment = random.choice(valid_segments)
+                    original_length = segment["length"]
+                    max_length = segment["maxlength"]
 
-                if max_steps > 0:
-                    num_steps = random.randint(1, max_steps)
-                    new_length = original_length + (num_steps * step)
-                
-                    self._update_segment_length(segment, new_length)
-    
+                    max_variation = max_length - original_length
+                    max_steps = int(max_variation / step)
+
+                    if max_steps > 0:
+                        num_steps = random.randint(1, max_steps)
+                        new_length = original_length + (num_steps * step)
+                    
+                        self._update_segment_length(segment, new_length)
+        elif variation_strategy == "guided_by_volume":
+            # Implement a more intelligent variation strategy here
+            # For now, it will just do a random variation
+            print("Guided by volume strategy not yet implemented. Falling back to random.")
+            return self.generate_variation(segments, variation_strategy="random")
+
         return new_segments
 
     def _update_segment_length(self, segment: dict, new_length: float):
