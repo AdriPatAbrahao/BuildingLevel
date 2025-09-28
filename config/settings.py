@@ -7,6 +7,8 @@ class BuildingConfig:
     SLAB_COORDINATES = constants.DEFAULT_SLAB_COORDINATES
 
     TQS_RESULTS_FILE = paths.TQS_OUTPUT_DIR / NAME / "ESPACIAL" / "RESDES.HTM"
+    TQS_ERROR_REPORT_FILE = paths.TQS_OUTPUT_DIR / NAME / "ESPACIAL" / "PGLOERR.HTM"
+    TQS_FATAL_ERROR_MARKER = "<H4> Existem mensagens de erros graves:</H4>"
 
 class RunConfig:
     """ Configurações que controlam COMO o script executa. """
@@ -15,7 +17,7 @@ class RunConfig:
     USE_GEOMETRIC_ESTIMATE = False
     
     # --- Geração de Dados ---
-    NUM_SAMPLES = 1000
+    NUM_SAMPLES = 5
     MAX_ITERATION_FACTOR = 2 # Multiplicador para tentativas de geração
 
 

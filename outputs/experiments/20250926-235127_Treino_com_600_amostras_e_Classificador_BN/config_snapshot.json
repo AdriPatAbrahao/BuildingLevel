@@ -1,0 +1,84 @@
+{
+    "BuildingConfig": {
+        "NAME": "OptimizedBuilding",
+        "BUILDING_COORDINATES": [
+            [
+                10.0,
+                10.0
+            ],
+            [
+                360.0,
+                10.0
+            ],
+            [
+                10.0,
+                410.0
+            ],
+            [
+                360.0,
+                410.0
+            ],
+            [
+                710.0,
+                410.0
+            ],
+            [
+                360.0,
+                810.0
+            ],
+            [
+                710.0,
+                810.0
+            ]
+        ],
+        "SLAB_COORDINATES": [
+            [
+                180.0,
+                105.0
+            ],
+            [
+                540.0,
+                105.0
+            ],
+            [
+                180.0,
+                615.0
+            ],
+            [
+                540.0,
+                615.0
+            ]
+        ],
+        "TQS_RESULTS_FILE": "C:\\TQS\\OptimizedBuilding\\ESPACIAL\\RESDES.HTM",
+        "TQS_ERROR_REPORT_FILE": "C:\\TQS\\OptimizedBuilding\\ESPACIAL\\PGLOERR.HTM",
+        "TQS_FATAL_ERROR_MARKER": "<H4> Existem mensagens de erros graves:</H4>"
+    },
+    "RunConfig": {
+        "USE_VECTOR_INPUT": true,
+        "USE_GEOMETRIC_ESTIMATE": false,
+        "NUM_SAMPLES": 600,
+        "MAX_ITERATION_FACTOR": 2
+    },
+    "NeuralNetConfig": {
+        "INPUT_SIZE": 24,
+        "HIDDEN_LAYERS": [
+            128,
+            128,
+            64
+        ],
+        "DROPOUT_RATE": 0.2,
+        "OUTPUT_SIZE": 2,
+        "LEARNING_RATE": 0.001,
+        "NUM_EPOCHS": 500,
+        "BATCH_SIZE": 32,
+        "TEST_SPLIT_RATIO": 0.15,
+        "VALIDATION_SPLIT_RATIO": 0.2,
+        "EARLY_STOPPING_PATIENCE": 50
+    },
+    "VectorConfig": {
+        "WALL_SEGMENTS_COUNT": 6
+    },
+    "Constants": {
+        "BEAM_THICKNESS_CM": 20.0
+    }
+}
