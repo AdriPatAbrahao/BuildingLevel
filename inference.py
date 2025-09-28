@@ -19,6 +19,7 @@ from tqs_interface.tqs_exec import RunModel
 from results.resultsext import extract_material_summary
 from utils.feature_pipeline import FeaturePipeline
 from utils.geometric_calculator import get_geometric_concrete_volume
+from joblib import load
             
 # --- CONFIGURAÇÃO DA INFERÊNCIA ---
 # Você só precisa definir o ID do experimento que quer usar.
@@ -34,6 +35,8 @@ CONFIG_SNAPSHOT_PATH = EXPERIMENT_DIR / "config_snapshot.json"
 
 class BuildingInference:
     def __init__(self):
+        self.validity_classifier = None
+        self._validity_classifier_classes = None
         try:
             print("--- Inicializando o Orquestrador de Inferência ---")
 
@@ -51,6 +54,19 @@ class BuildingInference:
             if not self.nn_manager.load_model(MODEL_PATH):
                 raise RuntimeError("Falha ao carregar o modelo treinado.")
 
+            classifier_path = EXPERIMENT_DIR / "validity_classifier.pkl"
+            if classifier_path.exists():
+                try:
+                    self.validity_classifier = load(classifier_path)
+                    self._validity_classifier_classes = list(getattr(self.validity_classifier, "classes_", []))
+                    print(f"Validity classifier loaded from '{classifier_path}'.")
+                except Exception as clf_err:
+                    print(f"Warning: failed to load validity classifier: {clf_err}")
+                    self.validity_classifier = None
+                    self._validity_classifier_classes = None
+            else:
+                print(f"Info: Validity classifier not found at '{classifier_path}'.")
+
             # Valida consistência entre snapshot do experimento e o ambiente atual
             self._validate_experiment_snapshot()
 
@@ -62,6 +78,21 @@ class BuildingInference:
         
         print("--- Orquestrador pronto ---") 
         
+    def _predict_validity_probability(self, feature_vector):
+        """Returns probability that the sample is INVALID (class 0) if classifier is available."""
+        if self.validity_classifier is None or not feature_vector:
+            return None
+        try:
+            proba = self.validity_classifier.predict_proba([feature_vector])[0]
+            classes = self._validity_classifier_classes or list(getattr(self.validity_classifier, "classes_", []))
+            if not classes or 0 not in classes:
+                return None
+            idx_invalid = classes.index(0)
+            return float(proba[idx_invalid])
+        except Exception as err:
+            print(f"Warning: validity classifier failed to evaluate sample: {err}")
+            return None
+
     def _validate_experiment_snapshot(self):
 
         """
@@ -177,7 +208,7 @@ class BuildingInference:
             # Propaga erro para impedir uso inconsistente
             raise
     
-    def predict_from_csv(self, csv_path_or_buffer) -> tuple[float, float]:
+    def predict_from_csv(self, csv_path_or_buffer) -> tuple[float, float, float | None]:
         """
         Executa uma predição a partir de um arquivo CSV ou buffer de memória.
         
@@ -188,7 +219,7 @@ class BuildingInference:
             csv_path_or_buffer: O caminho para o arquivo CSV ou um buffer StringIO.
 
         Returns:
-            Uma tupla (aco_predito, concreto_predito).
+            Uma tupla (aco_predito, concreto_predito, prob_invalid).
         """
         # 1. Lê os segmentos do CSV/buffer usando o método já existente
         self.input_processor.csv_path = csv_path_or_buffer
@@ -223,7 +254,9 @@ class BuildingInference:
         else:
             raise RuntimeError("Predição inválida: modelo não retornou pelo menos 1 saída para aço.")
 
-        return aco_predito, float(concreto_geom)
+        prob_invalid = self._predict_validity_probability(feature_vector)
+
+        return aco_predito, float(concreto_geom), prob_invalid
 
     def run_comparison(self):
         """

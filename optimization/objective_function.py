@@ -15,6 +15,8 @@ class ObjectiveFunction:
         self.PRECO_CONCRETO_M3 = 10.0
         self.PRECO_ACO_KGF = 100.0
         self.COMPRIMENTO_PASSO = 20.0  # PASSO DISCRETO (cm)
+        self.INVALID_PROB_THRESHOLD = 0.5
+        self.INVALID_COST_PENALTY = 1_000_000
         # ---------------------------
 
         self.design_space = design_space
@@ -60,10 +62,14 @@ class ObjectiveFunction:
             #  - Lê o CSV/buffer
             #  - Gera a geometria e extrai features
             #  - Calcula o concreto geométrico
-            aco_predito, concreto_predito = self.inference_runner.predict_from_csv(csv_buffer)
+            aco_predito, concreto_predito, prob_invalid = self.inference_runner.predict_from_csv(csv_buffer)
 
             # 4. Calcular o custo total
             custo_total = (aco_predito * self.PRECO_ACO_KGF) + (concreto_predito * self.PRECO_CONCRETO_M3)
+
+            if prob_invalid is not None and prob_invalid >= self.INVALID_PROB_THRESHOLD:
+                custo_total += self.INVALID_COST_PENALTY
+                print(f"[Objective] Penalizing due to high invalid probability: {prob_invalid:.2f}")
 
             # Penalidade para valores negativos
             if aco_predito < 0 or concreto_predito < 0:
