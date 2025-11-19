@@ -81,8 +81,8 @@ def calculate_beams_geometric_volume(beam_definitions: List[Dict]) -> float:
         node2 = beam.get("node_2")
 
         if node1 and node2:
-            # Calcula o comprimento da viga em cm usando a distância euclidiana
-            length_cm = np.sqrt((node2[0] - node1[0])**2 + (node2[1] - node1[1])**2) - 2*BEAM_WIDTH_CM
+            # Beam length in cm using Euclidean distance (no end-face subtraction)
+            length_cm = np.sqrt((node2[0] - node1[0])**2 + (node2[1] - node1[1])**2)
 
             if length_cm > 0:
                 length_m = length_cm * CM_TO_M
@@ -163,6 +163,7 @@ def get_geometric_concrete_volume(column_polygons: List[Dict], beam_definitions:
         raise ValueError("Entradas para 'column_polygons' e 'beam_definitions' devem ser listas.")
 
     volume_pilares = calculate_column_geometric_volume(column_polygons)
+    # Use beam volume subtracting portions inside columns (face-to-face effective length)
     volume_vigas = calculate_beams_geometric_volume_with_subtractions(beam_definitions, column_polygons)
 
     print(f"[Geométrico] Vol. Pilares: {volume_pilares:.4f} m³ | Vol. Vigas: {volume_vigas:.4f} m³")

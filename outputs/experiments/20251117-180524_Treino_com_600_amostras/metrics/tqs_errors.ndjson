@@ -1,0 +1,195 @@
+{"iteration": 0, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 1, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 2, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 4, "errors": [{"elm_number": 2, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 7, "errors": [{"elm_number": 8, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 16, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 22, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 23, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 29, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 33, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 35, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 38, "errors": [{"elm_number": 2, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 45, "errors": [{"elm_number": 2, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 50, "errors": [{"elm_number": 6, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}, {"elm_number": 11, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 52, "errors": [{"elm_number": 3, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 53, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 57, "errors": [{"elm_number": 9, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 59, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 60, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 61, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 63, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 68, "errors": [{"elm_number": 7, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 71, "errors": [{"elm_number": 6, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 76, "errors": [{"elm_number": 2, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 79, "errors": [{"elm_number": 8, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 85, "errors": [{"elm_number": 1, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 91, "errors": [{"elm_number": 9, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 97, "errors": [{"elm_number": 3, "error_header": "Vo da Viga com dimenses de viga parede"}, {"elm_number": 4, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 99, "errors": [{"elm_number": 2, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 101, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 103, "errors": [{"elm_number": 7, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 108, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 110, "errors": [{"elm_number": 9, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 113, "errors": [{"elm_number": 8, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 116, "errors": [{"elm_number": 8, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 117, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 118, "errors": [{"elm_number": 4, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 130, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 133, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 142, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 149, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 153, "errors": [{"elm_number": 6, "error_header": "Vo da Viga com dimenses de viga parede"}, {"elm_number": 7, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 155, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 158, "errors": [{"elm_number": 5, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 159, "errors": [{"elm_number": 7, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 160, "errors": [{"elm_number": 10, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 161, "errors": [{"elm_number": 5, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 165, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 170, "errors": [{"elm_number": 1, "error_header": "Vo da Viga com dimenses de viga parede"}, {"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 172, "errors": [{"elm_number": 8, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}, {"elm_number": 9, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}, {"elm_number": 10, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}, {"elm_number": 11, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 174, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 177, "errors": [{"elm_number": 5, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 179, "errors": [{"elm_number": 5, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 189, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 190, "errors": [{"elm_number": 5, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 196, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 199, "errors": [{"elm_number": 6, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}, {"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 202, "errors": [{"elm_number": 1, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 209, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 210, "errors": [{"elm_number": 8, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 211, "errors": [{"elm_number": 7, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}, {"elm_number": 8, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 215, "errors": [{"elm_number": 6, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 217, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 220, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 222, "errors": [{"elm_number": 5, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 223, "errors": [{"elm_number": 5, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 226, "errors": [{"elm_number": 8, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 227, "errors": [{"elm_number": 2, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 229, "errors": [{"elm_number": 6, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 236, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 238, "errors": [{"elm_number": 9, "error_header": "Vo da Viga com dimenses de viga parede"}, {"elm_number": 8, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 240, "errors": [{"elm_number": 3, "error_header": "Vo da Viga com dimenses de viga parede"}, {"elm_number": 7, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 242, "errors": [{"elm_number": 9, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 245, "errors": [{"elm_number": 7, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 246, "errors": [{"elm_number": 3, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 247, "errors": [{"elm_number": 1, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 248, "errors": [{"elm_number": 1, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 249, "errors": [{"elm_number": 7, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}, {"elm_number": 8, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 254, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 264, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 267, "errors": [{"elm_number": 1, "error_header": "Vo da Viga com dimenses de viga parede"}, {"elm_number": 8, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 272, "errors": [{"elm_number": 3, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 274, "errors": [{"elm_number": 1, "error_header": "Vo da Viga com dimenses de viga parede"}, {"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 276, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 280, "errors": [{"elm_number": 3, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}, {"elm_number": 4, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 283, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 285, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 286, "errors": [{"elm_number": 3, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 287, "errors": [{"elm_number": 3, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 291, "errors": [{"elm_number": 2, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 300, "errors": [{"elm_number": 7, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 301, "errors": [{"elm_number": 2, "error_header": "Vo da Viga com dimenses de viga parede"}, {"elm_number": 7, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}, {"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 302, "errors": [{"elm_number": 2, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 303, "errors": [{"elm_number": 3, "error_header": "Vo da Viga com dimenses de viga parede"}, {"elm_number": 4, "error_header": "Vo da Viga com dimenses de viga parede"}, {"elm_number": 8, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 305, "errors": [{"elm_number": 7, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}, {"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 308, "errors": [{"elm_number": 6, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}, {"elm_number": 7, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 315, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 320, "errors": [{"elm_number": 7, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 324, "errors": [{"elm_number": 8, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 326, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 334, "errors": [{"elm_number": 1, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 337, "errors": [{"elm_number": 6, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 339, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 346, "errors": [{"elm_number": 5, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 347, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 349, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 353, "errors": [{"elm_number": 8, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}, {"elm_number": 9, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 354, "errors": [{"elm_number": 3, "error_header": "Vo da Viga com dimenses de viga parede"}, {"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 355, "errors": [{"elm_number": 5, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}, {"elm_number": 6, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 356, "errors": [{"elm_number": 3, "error_header": "Vo da Viga com dimenses de viga parede"}, {"elm_number": 6, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 359, "errors": [{"elm_number": 5, "error_header": "Vo da Viga com dimenses de viga parede"}, {"elm_number": 8, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 363, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 365, "errors": [{"elm_number": 8, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}, {"elm_number": 9, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 370, "errors": [{"elm_number": 4, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 371, "errors": [{"elm_number": 6, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 374, "errors": [{"elm_number": 4, "error_header": "Vo da Viga com dimenses de viga parede"}, {"elm_number": 8, "error_header": "Vo da Viga com dimenses de viga parede"}, {"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 375, "errors": [{"elm_number": 7, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 378, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 382, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 383, "errors": [{"elm_number": 3, "error_header": "Vo da Viga com dimenses de viga parede"}, {"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 391, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 392, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 396, "errors": [{"elm_number": 1, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 398, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 412, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 413, "errors": [{"elm_number": 9, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 415, "errors": [{"elm_number": 11, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 418, "errors": [{"elm_number": 6, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 420, "errors": [{"elm_number": 6, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 422, "errors": [{"elm_number": 9, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 429, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 432, "errors": [{"elm_number": 7, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 433, "errors": [{"elm_number": 5, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}, {"elm_number": 8, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 434, "errors": [{"elm_number": 7, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 436, "errors": [{"elm_number": 7, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 437, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 441, "errors": [{"elm_number": 1, "error_header": "Vo da Viga com dimenses de viga parede"}, {"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 442, "errors": [{"elm_number": 5, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 444, "errors": [{"elm_number": 5, "error_header": "Vo da Viga com dimenses de viga parede"}, {"elm_number": 9, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 450, "errors": [{"elm_number": 7, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 456, "errors": [{"elm_number": 4, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 457, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 458, "errors": [{"elm_number": 6, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 465, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 466, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 467, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 468, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 470, "errors": [{"elm_number": 2, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 472, "errors": [{"elm_number": 9, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 480, "errors": [{"elm_number": 9, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 482, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 484, "errors": [{"elm_number": 7, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 486, "errors": [{"elm_number": 6, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 488, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 490, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 491, "errors": [{"elm_number": 7, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 500, "errors": [{"elm_number": 7, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 501, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 503, "errors": [{"elm_number": 5, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}, {"elm_number": 6, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 504, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 514, "errors": [{"elm_number": 7, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}, {"elm_number": 8, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 515, "errors": [{"elm_number": 2, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 516, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 517, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 518, "errors": [{"elm_number": 7, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}, {"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 519, "errors": [{"elm_number": 7, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 520, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 526, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 527, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 530, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 532, "errors": [{"elm_number": 7, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 534, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 535, "errors": [{"elm_number": 8, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}, {"elm_number": 9, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 536, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 540, "errors": [{"elm_number": 1, "error_header": "Vo da Viga com dimenses de viga parede"}, {"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 541, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 545, "errors": [{"elm_number": 9, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 546, "errors": [{"elm_number": 8, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 547, "errors": [{"elm_number": 8, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 551, "errors": [{"elm_number": 8, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 553, "errors": [{"elm_number": 5, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}, {"elm_number": 6, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 562, "errors": [{"elm_number": 5, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 564, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 567, "errors": [{"elm_number": 6, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 573, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 574, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 575, "errors": [{"elm_number": 6, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 580, "errors": [{"elm_number": 3, "error_header": "Vo da Viga com dimenses de viga parede"}]}
+{"iteration": 587, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 589, "errors": [{"elm_number": 2, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}, {"elm_number": 3, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 592, "errors": [{"elm_number": 7, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 595, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 596, "errors": [{"elm_number": 7, "error_header": "Excesso de armadura negativa com dobras junto ao apoio"}]}
+{"iteration": 597, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 599, "errors": [{"elm_number": 2, "error_header": "Vo da Viga com dimenses de viga parede"}, {"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}

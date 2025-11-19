@@ -14,6 +14,9 @@ DEFAULT_BEAM_WIDTH_CM = 20.0
 DEFAULT_BEAM_HEIGHT_CM = 40.0
 DEFAULT_SLAB_THICKNESS_CM: float = 12.0
 
+# Regra de divisão de viga por pilar intermediário
+SPLIT_BEAM_COLUMN_THRESHOLD_CM: float = 70.0
+
 # --- Cargas Padrão (unidades consistentes, ex: tf/m ou tf/m²) ---
 DEFAULT_BEAM_DEAD_LOAD_TF_M = 2.0
 DEFAULT_BEAM_LIVE_LOAD_TF_M = 1.0

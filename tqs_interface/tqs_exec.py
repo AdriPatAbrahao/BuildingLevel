@@ -6,76 +6,56 @@ import time
 from TQS import TQSUtil, TQSExec
 from config.settings import BuildingConfig
 
-_ENC_TRY_ORDER = ("utf-8", "latin-1", "ISO-8859-1")
-
 
 class TQSCriticalError(RuntimeError):
-    """Raised when the TQS structural report flags critical errors."""
+    """
+    Raised when the TQS DLL API reports critical structural errors.
+
+    Notes
+    -----
+    This exception is used to propagate critical conditions detected via the
+    TQS execution API (DLL) during global processing.
+    """
     pass
 
 
 def _cleanup_report_files():
-    # Remove both the results file (RESDES.HTM) and the error report (PGLOERR.HTM)
-    for raw_path in (
-        getattr(BuildingConfig, "TQS_RESULTS_FILE", None),
-        getattr(BuildingConfig, "TQS_ERROR_REPORT_FILE", None),
-    ):
-        if not raw_path:
-            continue
-        path = Path(raw_path)
-        if path.exists():
-            try:
-                path.unlink()
-            except OSError as exc:
-                TQSUtil.writef(f"Warning: failed to delete TQS report '{path}': {exc}")
+    """
+    Remove TQS results file before a new run.
 
-
-def _read_html_file(file_path: Path):
-    for encoding in _ENC_TRY_ORDER:
+    Removes only the results file (`RESDES.HTM`) to avoid mixing results
+    between runs. Error detection no longer relies on `PGLOERR.HTM`.
+    """
+    raw_path = getattr(BuildingConfig, "TQS_RESULTS_FILE", None)
+    if not raw_path:
+        return
+    path = Path(raw_path)
+    if path.exists():
         try:
-            return file_path.read_text(encoding=encoding)
-        except UnicodeDecodeError:
-            continue
-    return None
+            path.unlink()
+        except OSError as exc:
+            TQSUtil.writef(f"Warning: failed to delete TQS report '{path}': {exc}")
 
 
-def _check_structural_errors() -> bool:
-    # Wait a short moment for PGLOERR.HTM to appear and then check for the fatal marker
-    raw = getattr(BuildingConfig, "TQS_ERROR_REPORT_FILE", None)
-    if not raw:
-        print("Warning: BuildingConfig.TQS_ERROR_REPORT_FILE not set; skipping PGLOERR check.")
-        return False
-    
-    error_path = Path(raw)
-    timeout = 5.0
-    start = time.time()
-    print(f"Info: Waiting up to {timeout}s for error report: '{error_path}'")
-    while not error_path.exists():
-        if time.time() - start > timeout:
-           print(
-                f"Info: Error report file not found after {timeout}s at '{error_path}'. "
-                "Assuming no critical errors."
-            )
-        return False
-        time.sleep(0.2)
-    html = _read_html_file(error_path)
-    if html is None:
-        TQSUtil.writef(f"Warning: unable to read TQS error report '{error_path}'.")
-        return False
-    marker = getattr(BuildingConfig, "TQS_FATAL_ERROR_MARKER", "").lower()
-    if not marker:
-        TQSUtil.writef("Warning: TQS_FATAL_ERROR_MARKER not set; cannot detect critical errors.")
-        return False
-    if marker in html.lower():
-        TQSUtil.writef("Critical errors reported by TQS (PGLOERR.HTM).")
-        return True
-    TQSUtil.writef("Info: No critical errors reported by TQS.")
-    return False
+# HTML error report reading removed (obsolete)
+
+
+# PGLOERR-based structural error check removed (errors are read via DLL)
 
 
 def RunModel(building_name):
     """
-    Global processing of the building using TQSExec with minimal overhead
+    Execute the global processing in TQS for the given building.
+
+    Parameters
+    ----------
+    building_name : str
+        Name of the building folder inside TQS outputs.
+
+    Raises
+    ------
+    TQSCriticalError
+        If the TQS DLL API reports critical structural errors or execution fails.
     """
     result = subprocess.getoutput('tasklist /FI "IMAGENAME eq NTQSHTM.EXE"')
 
@@ -94,9 +74,9 @@ def RunModel(building_name):
         columns=2
     ))
     job.EnterTask(TQSExec.TaskStructuralReport())
-    job.Execute()
-
-    if _check_structural_errors():
-        raise TQSCriticalError("TQS reported critical structural errors (PGLOERR.HTM)")
+    try:
+        job.Execute()
+    except Exception as exc:
+        raise TQSCriticalError(f"TQS global processing failed via DLL: {exc}")
 
     TQSUtil.writef("Global processing completed successfully.")

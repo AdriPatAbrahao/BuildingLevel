@@ -1,0 +1,48 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Treinamento (main.py)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Otimização (run_optimization.py)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/run_optimization.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Inferência (solucao_otima.csv)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/inference.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "args": [
+        "--csv", "outputs/results/solucao_otima.csv",
+        "--predict"
+      ],
+      "env": {
+        "BUILDOPT_EXPERIMENT_ID": "20251117-180524_Treino_com_600_amostras"
+      },
+      "justMyCode": true
+    },
+    {
+      "name": "Arquivo atual (qualquer .py aberto)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${file}",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    }
+  ]
+}

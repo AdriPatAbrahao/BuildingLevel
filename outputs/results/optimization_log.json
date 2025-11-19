@@ -1,0 +1,372 @@
+[
+  {
+    "iteration": 1,
+    "cost": 128208.7390625,
+    "steel": 1280.775390625,
+    "concrete": 13.120000000000003,
+    "prob_invalid": 0.15547788467060153,
+    "improved": true,
+    "no_improve": 0,
+    "elapsed_sec": 1.1394248008728027
+  },
+  {
+    "iteration": 2,
+    "cost": 127504.53724609375,
+    "steel": 1273.6917724609375,
+    "concrete": 13.536,
+    "prob_invalid": 0.08879450466620675,
+    "improved": true,
+    "no_improve": 0,
+    "elapsed_sec": 2.240912914276123
+  },
+  {
+    "iteration": 3,
+    "cost": 124171.06904296875,
+    "steel": 1240.6326904296875,
+    "concrete": 10.780000000000001,
+    "prob_invalid": 0.348716945031996,
+    "improved": true,
+    "no_improve": 0,
+    "elapsed_sec": 3.3122925758361816
+  },
+  {
+    "iteration": 4,
+    "cost": 124171.06904296875,
+    "steel": 1240.6326904296875,
+    "concrete": 10.780000000000001,
+    "prob_invalid": 0.348716945031996,
+    "improved": false,
+    "no_improve": 1,
+    "elapsed_sec": 4.469238758087158
+  },
+  {
+    "iteration": 5,
+    "cost": 122663.89322265625,
+    "steel": 1225.4205322265625,
+    "concrete": 12.184000000000001,
+    "prob_invalid": 0.10858240445279044,
+    "improved": true,
+    "no_improve": 0,
+    "elapsed_sec": 5.6943395137786865
+  },
+  {
+    "iteration": 6,
+    "cost": 122463.007109375,
+    "steel": 1223.44287109375,
+    "concrete": 11.872,
+    "prob_invalid": 0.10579505102574549,
+    "improved": true,
+    "no_improve": 0,
+    "elapsed_sec": 6.898000001907349
+  },
+  {
+    "iteration": 7,
+    "cost": 122025.85611328125,
+    "steel": 1219.0401611328125,
+    "concrete": 12.184,
+    "prob_invalid": 0.08308121604089513,
+    "improved": true,
+    "no_improve": 0,
+    "elapsed_sec": 8.152470588684082
+  },
+  {
+    "iteration": 8,
+    "cost": 121433.50751953125,
+    "steel": 1213.1270751953125,
+    "concrete": 12.08,
+    "prob_invalid": 0.0820134363725068,
+    "improved": true,
+    "no_improve": 0,
+    "elapsed_sec": 9.265625
+  },
+  {
+    "iteration": 9,
+    "cost": 121238.97626953125,
+    "steel": 1211.1817626953125,
+    "concrete": 12.08,
+    "prob_invalid": 0.08554836901319063,
+    "improved": true,
+    "no_improve": 0,
+    "elapsed_sec": 10.387884378433228
+  },
+  {
+    "iteration": 10,
+    "cost": 121238.97626953125,
+    "steel": 1211.1817626953125,
+    "concrete": 12.08,
+    "prob_invalid": 0.08554836901319063,
+    "improved": false,
+    "no_improve": 1,
+    "elapsed_sec": 11.49387788772583
+  },
+  {
+    "iteration": 11,
+    "cost": 121183.7980859375,
+    "steel": 1210.640380859375,
+    "concrete": 11.975999999999999,
+    "prob_invalid": 0.07725506008611338,
+    "improved": true,
+    "no_improve": 0,
+    "elapsed_sec": 12.619422674179077
+  },
+  {
+    "iteration": 12,
+    "cost": 121147.57982421874,
+    "steel": 1210.2781982421875,
+    "concrete": 11.975999999999999,
+    "prob_invalid": 0.07726205955094434,
+    "improved": true,
+    "no_improve": 0,
+    "elapsed_sec": 13.736928701400757
+  },
+  {
+    "iteration": 13,
+    "cost": 121147.57982421874,
+    "steel": 1210.2781982421875,
+    "concrete": 11.975999999999999,
+    "prob_invalid": 0.07726205955094434,
+    "improved": false,
+    "no_improve": 1,
+    "elapsed_sec": 14.869848012924194
+  },
+  {
+    "iteration": 14,
+    "cost": 121147.57982421874,
+    "steel": 1210.2781982421875,
+    "concrete": 11.975999999999999,
+    "prob_invalid": 0.07726205955094434,
+    "improved": false,
+    "no_improve": 2,
+    "elapsed_sec": 16.038721799850464
+  },
+  {
+    "iteration": 15,
+    "cost": 121147.57982421874,
+    "steel": 1210.2781982421875,
+    "concrete": 11.975999999999999,
+    "prob_invalid": 0.07726205955094434,
+    "improved": false,
+    "no_improve": 3,
+    "elapsed_sec": 17.271437644958496
+  },
+  {
+    "iteration": 16,
+    "cost": 120957.73607421874,
+    "steel": 1208.3797607421875,
+    "concrete": 11.975999999999999,
+    "prob_invalid": 0.07409077923222562,
+    "improved": true,
+    "no_improve": 0,
+    "elapsed_sec": 18.42347025871277
+  },
+  {
+    "iteration": 17,
+    "cost": 120751.9963671875,
+    "steel": 1206.332763671875,
+    "concrete": 11.872,
+    "prob_invalid": 0.0735631686927154,
+    "improved": true,
+    "no_improve": 0,
+    "elapsed_sec": 19.528424739837646
+  },
+  {
+    "iteration": 18,
+    "cost": 120751.9963671875,
+    "steel": 1206.332763671875,
+    "concrete": 11.872,
+    "prob_invalid": 0.0735631686927154,
+    "improved": false,
+    "no_improve": 1,
+    "elapsed_sec": 20.704425811767578
+  },
+  {
+    "iteration": 19,
+    "cost": 120751.9963671875,
+    "steel": 1206.332763671875,
+    "concrete": 11.872,
+    "prob_invalid": 0.0735631686927154,
+    "improved": false,
+    "no_improve": 2,
+    "elapsed_sec": 21.779383659362793
+  },
+  {
+    "iteration": 20,
+    "cost": 120751.9963671875,
+    "steel": 1206.332763671875,
+    "concrete": 11.872,
+    "prob_invalid": 0.0735631686927154,
+    "improved": false,
+    "no_improve": 3,
+    "elapsed_sec": 22.915677309036255
+  },
+  {
+    "iteration": 21,
+    "cost": 120751.9963671875,
+    "steel": 1206.332763671875,
+    "concrete": 11.872,
+    "prob_invalid": 0.0735631686927154,
+    "improved": false,
+    "no_improve": 4,
+    "elapsed_sec": 24.033939599990845
+  },
+  {
+    "iteration": 22,
+    "cost": 120751.9963671875,
+    "steel": 1206.332763671875,
+    "concrete": 11.872,
+    "prob_invalid": 0.0735631686927154,
+    "improved": false,
+    "no_improve": 5,
+    "elapsed_sec": 25.109299182891846
+  },
+  {
+    "iteration": 23,
+    "cost": 120751.9963671875,
+    "steel": 1206.332763671875,
+    "concrete": 11.872,
+    "prob_invalid": 0.0735631686927154,
+    "improved": false,
+    "no_improve": 6,
+    "elapsed_sec": 26.26591968536377
+  },
+  {
+    "iteration": 24,
+    "cost": 120751.9963671875,
+    "steel": 1206.332763671875,
+    "concrete": 11.872,
+    "prob_invalid": 0.0735631686927154,
+    "improved": false,
+    "no_improve": 7,
+    "elapsed_sec": 27.39767622947693
+  },
+  {
+    "iteration": 25,
+    "cost": 120751.9963671875,
+    "steel": 1206.332763671875,
+    "concrete": 11.872,
+    "prob_invalid": 0.0735631686927154,
+    "improved": false,
+    "no_improve": 8,
+    "elapsed_sec": 28.744719743728638
+  },
+  {
+    "iteration": 26,
+    "cost": 120751.9963671875,
+    "steel": 1206.332763671875,
+    "concrete": 11.872,
+    "prob_invalid": 0.0735631686927154,
+    "improved": false,
+    "no_improve": 9,
+    "elapsed_sec": 29.90444254875183
+  },
+  {
+    "iteration": 27,
+    "cost": 120751.9963671875,
+    "steel": 1206.332763671875,
+    "concrete": 11.872,
+    "prob_invalid": 0.0735631686927154,
+    "improved": false,
+    "no_improve": 10,
+    "elapsed_sec": 31.15670132637024
+  },
+  {
+    "iteration": 28,
+    "cost": 120751.9963671875,
+    "steel": 1206.332763671875,
+    "concrete": 11.872,
+    "prob_invalid": 0.0735631686927154,
+    "improved": false,
+    "no_improve": 11,
+    "elapsed_sec": 32.40732288360596
+  },
+  {
+    "iteration": 29,
+    "cost": 120751.9963671875,
+    "steel": 1206.332763671875,
+    "concrete": 11.872,
+    "prob_invalid": 0.0735631686927154,
+    "improved": false,
+    "no_improve": 12,
+    "elapsed_sec": 33.66783618927002
+  },
+  {
+    "iteration": 30,
+    "cost": 120751.9963671875,
+    "steel": 1206.332763671875,
+    "concrete": 11.872,
+    "prob_invalid": 0.0735631686927154,
+    "improved": false,
+    "no_improve": 13,
+    "elapsed_sec": 34.92062020301819
+  },
+  {
+    "iteration": 31,
+    "cost": 120751.9963671875,
+    "steel": 1206.332763671875,
+    "concrete": 11.872,
+    "prob_invalid": 0.0735631686927154,
+    "improved": false,
+    "no_improve": 14,
+    "elapsed_sec": 36.056464195251465
+  },
+  {
+    "iteration": 32,
+    "cost": 120751.9963671875,
+    "steel": 1206.332763671875,
+    "concrete": 11.872,
+    "prob_invalid": 0.0735631686927154,
+    "improved": false,
+    "no_improve": 15,
+    "elapsed_sec": 37.18210792541504
+  },
+  {
+    "iteration": 33,
+    "cost": 120751.9963671875,
+    "steel": 1206.332763671875,
+    "concrete": 11.872,
+    "prob_invalid": 0.0735631686927154,
+    "improved": false,
+    "no_improve": 16,
+    "elapsed_sec": 38.39734435081482
+  },
+  {
+    "iteration": 34,
+    "cost": 120751.9963671875,
+    "steel": 1206.332763671875,
+    "concrete": 11.872,
+    "prob_invalid": 0.0735631686927154,
+    "improved": false,
+    "no_improve": 17,
+    "elapsed_sec": 39.60358190536499
+  },
+  {
+    "iteration": 35,
+    "cost": 120751.9963671875,
+    "steel": 1206.332763671875,
+    "concrete": 11.872,
+    "prob_invalid": 0.0735631686927154,
+    "improved": false,
+    "no_improve": 18,
+    "elapsed_sec": 40.69173860549927
+  },
+  {
+    "iteration": 36,
+    "cost": 120751.9963671875,
+    "steel": 1206.332763671875,
+    "concrete": 11.872,
+    "prob_invalid": 0.0735631686927154,
+    "improved": false,
+    "no_improve": 19,
+    "elapsed_sec": 41.910914182662964
+  },
+  {
+    "iteration": 37,
+    "cost": 120751.9963671875,
+    "steel": 1206.332763671875,
+    "concrete": 11.872,
+    "prob_invalid": 0.0735631686927154,
+    "improved": false,
+    "no_improve": 20,
+    "elapsed_sec": 43.06761860847473
+  }
+]

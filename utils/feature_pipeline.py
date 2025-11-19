@@ -8,19 +8,33 @@ from utils.feature_engineer import FeatureEngineer
 
 class FeaturePipeline:
     """
-    Encapsula todo o processo de transformação de dados, desde o arquivo CSV
-    até o vetor de features normalizado, garantindo consistência entre
-    treinamento e inferência.
+    End-to-end feature transformation pipeline for training and inference.
+
+    Reads geometry from CSV and builds feature vectors, applying `StandardScaler`
+    consistently between training and inference. Scalers are persisted with
+    `joblib` for reproducibility.
     """
-    def __init__(self):
-        self.input_processor = LengthProcessor() # Assume LengthProcessor por padrão
+    def __init__(self, input_processor=None):
+        self.input_processor = input_processor if input_processor is not None else LengthProcessor()
         self.scaler_X = StandardScaler()
         self.scaler_y = StandardScaler()
         self.is_fitted = False # Flag para saber se os scalers foram treinados
 
     def fit_transform(self, feature_vectors: List[List[float]], outputs: List[List[float]]) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Treina os scalers e transforma os dados. Usado durante o treinamento.
+        Fit scalers and transform features and outputs (training phase).
+
+        Parameters
+        ----------
+        feature_vectors : List[List[float]]
+            Raw feature vectors extracted from geometry.
+        outputs : List[List[float]]
+            Target outputs (e.g., steel and concrete if multi-output).
+
+        Returns
+        -------
+        Tuple[np.ndarray, np.ndarray]
+            Scaled features and scaled outputs.
         """
         X_np = np.array(feature_vectors, dtype=np.float32)
         y_np = np.array(outputs, dtype=np.float32)
@@ -35,8 +49,17 @@ class FeaturePipeline:
 
     def transform_features(self, feature_vectors: List[List[float]]) -> np.ndarray:
         """
-        Apenas transforma os features de entrada usando o scaler já treinado.
-        Usado durante a inferência.
+        Transform features using the fitted scaler (inference phase).
+
+        Parameters
+        ----------
+        feature_vectors : List[List[float]]
+            Raw feature vectors.
+
+        Returns
+        -------
+        np.ndarray
+            Scaled features.
         """
         if not self.is_fitted:
             raise RuntimeError("A pipeline precisa ser 'fitada' antes de transformar dados.")
@@ -47,8 +70,17 @@ class FeaturePipeline:
 
     def inverse_transform_outputs(self, predictions_scaled: np.ndarray) -> np.ndarray:
         """
-        Converte as predições normalizadas de volta para a escala original.
-        Usado durante a inferência.
+        Convert scaled predictions back to original scale.
+
+        Parameters
+        ----------
+        predictions_scaled : np.ndarray
+            Model outputs in scaled units.
+
+        Returns
+        -------
+        np.ndarray
+            Descaled predictions.
         """
         if not self.is_fitted:
             raise RuntimeError("A pipeline precisa ser 'fitada' antes de transformar dados.")
@@ -57,8 +89,17 @@ class FeaturePipeline:
 
     def process_csv_to_features(self, csv_path: str) -> List[float]:
         """
-        Executa o fluxo completo de um CSV para um vetor de features.
-        Esta é a função principal para a inferência.
+        Full flow from CSV to feature vector (inference helper).
+
+        Parameters
+        ----------
+        csv_path : str
+            Path to the input CSV file.
+
+        Returns
+        -------
+        List[float]
+            Extracted feature vector.
         """
         # Define o caminho do CSV no processador de input
         self.input_processor.csv_path = csv_path
@@ -78,7 +119,7 @@ class FeaturePipeline:
         return feature_vector
 
     def save(self, path: str = "feature_pipeline.pkl"):
-        """Salva os scalers treinados em um arquivo."""
+        """Persist fitted scalers to a file using `joblib`."""
         if not self.is_fitted:
             print("Aviso: Tentando salvar uma pipeline não treinada.")
             return
@@ -86,7 +127,7 @@ class FeaturePipeline:
         print(f"Pipeline (scalers) salva em {path}")
 
     def load(self, path: str = "feature_pipeline.pkl"):
-        """Carrega os scalers de um arquivo."""
+        """Load scalers from file and mark the pipeline as fitted."""
         try:
             scalers = joblib.load(path)
             self.scaler_X = scalers['scaler_X']

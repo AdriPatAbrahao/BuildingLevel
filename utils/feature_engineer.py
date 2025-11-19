@@ -132,6 +132,32 @@ class FeatureEngineer:
         ])
         
         return features
+    @staticmethod
+    def feature_names() -> List[str]:
+        return [
+            "columns_total_area_cm2",
+            "columns_count",
+            "columns_mean_area_cm2",
+            "columns_std_area_cm2",
+            "columns_min_area_cm2",
+            "columns_max_area_cm2",
+            "beams_total_effective_length_cm",
+            "beams_count",
+            "beams_mean_effective_length_cm",
+            "beams_std_effective_length_cm",
+            "beams_max_effective_length_cm",
+            "inertia_sum_Ix",
+            "inertia_sum_Iy",
+            "inertia_mean_Ix",
+            "inertia_mean_Iy",
+            "inertia_ratio_Iy_over_Ix",
+            "vol_columns_m3",
+            "vol_beams_m3",
+            "columns_total_perimeter_cm",
+            "columns_mean_perimeter_cm",
+            "columns_std_perimeter_cm",
+            "columns_mean_compactness",
+        ]
     
 def calculate_centroidal_moment_of_inertia(polygon: Polygon) -> tuple[float, float]:
     """

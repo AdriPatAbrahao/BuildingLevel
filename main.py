@@ -1,4 +1,4 @@
-﻿# main.py
+# main.py
 """
 Main execution script for the Building Structure Optimization process.
 
@@ -18,6 +18,7 @@ Date: March 2025
 # Standard library imports
 import copy
 from random import random
+import random as py_random
 import traceback
 import time # Added for potential delays and timing
 from typing import List, Tuple, Optional, Dict
@@ -26,13 +27,19 @@ from shapely.geometry import Polygon
 from sklearn.metrics import r2_score, mean_absolute_error # Added for evaluation metrics
 # import numpy as np # Uncomment if needed for advanced splitting or direct normalization here
 
-# Third-party imports
+# Third-party importspy
 from TQS import TQSUtil
 import torch # TQS Utility functions
+import threading
+import shutil
+import urllib.request
+import smtplib
+import ssl
+import os
 
 # Project-specific imports
 # Configuration - Make sure these files exist and are configured
-from config.settings import BuildingConfig, RunConfig # General settings, NN config, analysis mode flag
+from config.settings import BuildingConfig, RunConfig, NeuralNetConfig # General settings, NN config, analysis mode flag
 from config.paths import FINAL_VECTORS_CSV_PATH # Path for saving final vectors CSV
 
 # Algorithm components - Core logic for processing and ML
@@ -53,6 +60,7 @@ from models.nn_manager import NeuralNetworkManager # Using the path from your pr
 
 # Results and Visualization - Handling outputs and plotting
 from results.resultsext import extract_material_summary # Extracts data from TQS output file
+from tqs_interface.tqs_errors import TQSErrorReader
 from visualization.segment_plotter import SegmentPlotter # Plots individual configurations
 from visualization.results_plotter import ResultsPlotter # Plots NN performance graphs
 
@@ -66,6 +74,9 @@ from utils.feature_pipeline import FeaturePipeline
 from utils.experiment_manager import ExperimentManager
 from config import paths # Importa o mÃ³dulo de caminhos
 import logging
+import hashlib
+import json
+from pathlib import Path
 
 # =============================================================================
 # Main Optimizer Class
@@ -119,14 +130,44 @@ class BuildingOptimizer:
         # --- Component Initialization ---
         self.tqs_manager = TQSModelManager(BuildingConfig.NAME)
         self.nn_manager = NeuralNetworkManager()
-        self.feature_pipeline = FeaturePipeline()  # A pipeline que farÃ¡ a normalizaÃ§Ã£o
-
-        self.binary_processor = BinaryProcessor() # Used if not vector_input
-        self.length_processor = LengthProcessor() # Used if vector_input
+        # Seeds para reprodutibilidade
+        try:
+            seed = getattr(RunConfig, 'SEED', 42)
+            py_random.seed(seed)
+            np.random.seed(seed)
+            torch.manual_seed(seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(seed)
+                torch.backends.cudnn.deterministic = True
+                torch.backends.cudnn.benchmark = False
+        except Exception:
+            pass
+        self.length_processor = LengthProcessor()
+        self.feature_pipeline = FeaturePipeline(self.length_processor)
+        self.binary_processor = BinaryProcessor()
 
         # --- State Variables ---
         self.current_iteration = 0 # Counts attempts to generate configurations
         self.generated_valid_configurations = [] # Stores List[Dict] for each valid config
+        self._clf_features: List[List[float]] = []
+        self._clf_labels: List[int] = []  # 1 = válido, 0 = inválido
+        self._error_reader = TQSErrorReader()
+        self.metrics_dir = self.exp_manager.get_metrics_dir()
+        self.nn_manager.metrics_dir = self.metrics_dir
+        try:
+            self._preflight_checks()
+        except Exception:
+            pass
+        self._seen_segments_hash = set()
+        self._monitor_stop = False
+        self._monitor_thread = None
+        self._heartbeat_ts = time.time()
+        if getattr(RunConfig, 'MONITORING_ENABLED', True):
+            try:
+                self._monitor_thread = threading.Thread(target=self._monitor_system_health_loop, daemon=True)
+                self._monitor_thread.start()
+            except Exception:
+                pass
 
         print("--- Optimizer Initialized Successfully ---")
 
@@ -252,13 +293,21 @@ class BuildingOptimizer:
         feature_vectors = []
         output_values = []
         processed_valid_configs_count = 0
+        if getattr(RunConfig, 'CHECKPOINTS_ENABLED', True) and getattr(RunConfig, 'RESUME_FROM_CHECKPOINT', False):
+            ck = self._load_checkpoint()
+            if ck:
+                feature_vectors = ck.get('feature_vectors', [])
+                output_values = ck.get('output_values', [])
+                processed_valid_configs_count = int(ck.get('valid_count', 0))
+                self.current_iteration = int(ck.get('current_iteration', 0))
+                print("Resuming from checkpoint.")
         # Calculate max attempts to prevent infinite loops if analysis consistently fails
         max_iterations = self.num_target_samples * RunConfig.MAX_ITERATION_FACTOR
 
         # --- Analyze Initial Configuration ---
         print(f"\nAnalyzing Initial Configuration (Attempt 0)...")
         analysis_start_time = time.time()
-        steel, concrete, column_polygons, beam_definitions = self._get_analysis_results(initial_segments)
+        steel, concrete, column_polygons, beam_definitions, is_valid = self._get_analysis_results(initial_segments)
         analysis_end_time = time.time()
         print(f"Initial analysis took {analysis_end_time - analysis_start_time:.2f}s")
 
@@ -269,14 +318,18 @@ class BuildingOptimizer:
             
             print(f"[DEBUG MAIN] Vetor de Features da Semente: {np.array(feature_vector)}")
 
-            feature_vectors.append(feature_vector)
-            # Treinamento aÃ§o-only: requer resultado de aÃ§o (TQS). Geometric mode nÃ£o Ã© suportado aqui.
-            if steel is None:
-                raise RuntimeError("Steel is None. For steel-only training, use TQS mode (RunConfig.USE_GEOMETRIC_ESTIMATE=False).")
-            output_values.append([steel])
-            if self.use_vector_input:
-                 self.generated_valid_configurations.append(copy.deepcopy(initial_segments))
-            processed_valid_configs_count += 1
+            # Rótulo de validade para classificador
+            self._clf_features.append(feature_vector)
+            self._clf_labels.append(1 if is_valid else 0)
+            # Apenas amostras válidas entram no treino de aço
+            if is_valid:
+                feature_vectors.append(feature_vector)
+                if steel is None:
+                    raise RuntimeError("Steel is None. For steel-only training, use TQS mode (RunConfig.USE_GEOMETRIC_ESTIMATE=False).")
+                output_values.append([steel])
+                if self.use_vector_input:
+                    self.generated_valid_configurations.append(copy.deepcopy(initial_segments))
+                processed_valid_configs_count += 1
         else:
             # If the very first configuration fails, it's critical.
             print("CRITICAL: Initial configuration failed analysis. Check input data, TQS setup, or geometric calculation logic.")
@@ -287,7 +340,9 @@ class BuildingOptimizer:
         # Use initial_segments as the base for variations for simplicity.
         base_segments_for_variation = initial_segments
 
+        last_ck_ts = time.time()
         while processed_valid_configs_count < self.num_target_samples and self.current_iteration < max_iterations:
+            self._heartbeat_ts = time.time()
             self.current_iteration += 1 # Increment attempt counter
             print(f"\n--- Iteration Attempt {self.current_iteration}/{max_iterations} (Valid Samples Collected: {processed_valid_configs_count}/{self.num_target_samples}) ---")
 
@@ -295,6 +350,11 @@ class BuildingOptimizer:
             print("Generating segment variation...")
             try:
                  new_segments = self._generate_segment_variation(base_segments_for_variation, variation_strategy="random")
+                 seg_hash = hashlib.sha256(json.dumps(new_segments, ensure_ascii=False).encode("utf-8")).hexdigest()
+                 if seg_hash in getattr(self, '_seen_segments_hash', set()):
+                     print("Duplicate geometry detected. Skipping re-analysis.")
+                     continue
+                 self._seen_segments_hash.add(seg_hash)
             except Exception as gen_e:
                  print(f"Error during segment variation generation: {gen_e}. Skipping iteration.")
                  continue # Skip to next iteration
@@ -308,7 +368,7 @@ class BuildingOptimizer:
 
             # 2. Get analysis results (TQS or Geometric)
             analysis_start_time = time.time()
-            steel, concrete, column_polygons, beam_definitions = self._get_analysis_results(new_segments)
+            steel, concrete, column_polygons, beam_definitions, is_valid = self._get_analysis_results(new_segments)
             analysis_end_time = time.time()
             print(f"Analysis took {analysis_end_time - analysis_start_time:.2f}s")
 
@@ -319,19 +379,31 @@ class BuildingOptimizer:
                 feature_vector = self._extract_feature_vector(column_polygons, beam_definitions)
                 # Ensure feature vector extraction was successful
                 if feature_vector:
-                     feature_vectors.append(feature_vector)
-                     if steel is None:
-                         raise RuntimeError("Steel is None. For steel-only training, use TQS mode (RunConfig.USE_GEOMETRIC_ESTIMATE=False).")
-                     output_values.append([steel])
-                     if self.use_vector_input:
-                         self.generated_valid_configurations.append(copy.deepcopy(new_segments))
-                     # Optional: Update base segments if varying from last success
-                     # base_segments_for_variation = new_segments
+                     # Rótulo para classificador (válida/inválida)
+                     self._clf_features.append(feature_vector)
+                     self._clf_labels.append(1 if is_valid else 0)
+                     # Apenas válidas no treino de aço
+                     if is_valid:
+                         feature_vectors.append(feature_vector)
+                         if steel is None:
+                             raise RuntimeError("Steel is None. For steel-only training, use TQS mode (RunConfig.USE_GEOMETRIC_ESTIMATE=False).")
+                         output_values.append([steel])
+                         if self.use_vector_input:
+                             self.generated_valid_configurations.append(copy.deepcopy(new_segments))
+                         # Optional: Update base segments if varying from last success
+                         # base_segments_for_variation = new_segments
                 else:
                      print(f"Warning: Failed to extract feature vector for valid config {self.current_iteration}. Skipping sample.")
                      processed_valid_configs_count -= 1 # Decrement count as it's not fully usable
             else:
                 print(f"Config {self.current_iteration} failed analysis. Skipping sample.")
+            if getattr(RunConfig, 'CHECKPOINTS_ENABLED', True):
+                if time.time() - last_ck_ts >= max(60, int(getattr(RunConfig, 'CHECKPOINT_INTERVAL_MIN', 60)) * 60):
+                    last_ck_ts = time.time()
+                    try:
+                        self._save_checkpoint(feature_vectors, output_values, processed_valid_configs_count)
+                    except Exception:
+                        pass
 
             # Optional small delay
             # time.sleep(0.05)
@@ -346,6 +418,129 @@ class BuildingOptimizer:
 
         return feature_vectors, output_values
 
+    def _monitor_system_health_loop(self):
+        interval = max(60, int(getattr(RunConfig, 'MONITOR_INTERVAL_MIN', 30)) * 60)
+        stuck_thr = max(60, int(getattr(RunConfig, 'ALERT_STUCK_THRESHOLD_MIN', 90)) * 60)
+        while not self._monitor_stop:
+            ts = time.time()
+            cpu = None
+            mem = None
+            try:
+                import psutil
+                cpu = float(psutil.cpu_percent(interval=1))
+                mem = float(psutil.virtual_memory().percent)
+            except Exception:
+                pass
+            try:
+                du = shutil.disk_usage(str(self.exp_manager.run_dir))
+                disk_used_ratio = (du.used / du.total) if du.total else None
+            except Exception:
+                disk_used_ratio = None
+            net_ok = None
+            try:
+                with urllib.request.urlopen('http://example.com', timeout=5) as _resp:
+                    net_ok = True
+            except Exception:
+                net_ok = False
+            rec = {
+                'timestamp': ts,
+                'cpu_percent': cpu,
+                'mem_percent': mem,
+                'disk_used_ratio': disk_used_ratio,
+                'network_ok': net_ok
+            }
+            try:
+                with open(self.metrics_dir / 'system_health.ndjson', 'a', encoding='utf-8') as f:
+                    f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            except Exception:
+                pass
+            try:
+                if disk_used_ratio is not None and disk_used_ratio >= 0.8:
+                    self._send_alert('Disk space high', f'Usage={disk_used_ratio:.2f}')
+            except Exception:
+                pass
+            try:
+                if (ts - self._heartbeat_ts) >= stuck_thr:
+                    self._send_alert('Process may be stuck', f'No heartbeat for {int(ts - self._heartbeat_ts)}s')
+            except Exception:
+                pass
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
+            time.sleep(interval)
+
+    def _send_alert(self, subject: str, body: str):
+        to_addr = os.getenv('BUILDOPT_ALERT_EMAIL_TO')
+        host = os.getenv('BUILDOPT_ALERT_SMTP_HOST')
+        port = int(os.getenv('BUILDOPT_ALERT_SMTP_PORT', '0'))
+        user = os.getenv('BUILDOPT_ALERT_SMTP_USER')
+        pwd = os.getenv('BUILDOPT_ALERT_SMTP_PASS')
+        if to_addr and host and port:
+            try:
+                msg = f"Subject: {subject}\n\n{body}"
+                context = ssl.create_default_context()
+                with smtplib.SMTP(host, port, timeout=10) as server:
+                    try:
+                        server.starttls(context=context)
+                    except Exception:
+                        pass
+                    if user and pwd:
+                        server.login(user, pwd)
+                    server.sendmail(user or 'noreply@localhost', [to_addr], msg)
+                return
+            except Exception:
+                pass
+        try:
+            with open(self.metrics_dir / 'alerts.ndjson', 'a', encoding='utf-8') as f:
+                f.write(json.dumps({'timestamp': time.time(), 'subject': subject, 'body': body}, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+
+    def _log_error(self, label: str, message: str):
+        try:
+            with open(self.metrics_dir / 'errors.ndjson', 'a', encoding='utf-8') as f:
+                f.write(json.dumps({'timestamp': time.time(), 'label': label, 'message': message}, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+
+    def _save_checkpoint(self, feature_vectors: List[List[float]], output_values: List[List[float]], valid_count: int):
+        obj = {
+            'timestamp': time.time(),
+            'current_iteration': self.current_iteration,
+            'valid_count': valid_count,
+            'feature_vectors': feature_vectors,
+            'output_values': output_values
+        }
+        with open(self.exp_manager.run_dir / 'checkpoint.json', 'w', encoding='utf-8') as f:
+            json.dump(obj, f)
+
+    def _load_checkpoint(self) -> Optional[Dict]:
+        p = self.exp_manager.run_dir / 'checkpoint.json'
+        if not p.exists():
+            return None
+        try:
+            with open(p, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+    def _preflight_checks(self):
+        try:
+            du = shutil.disk_usage(str(self.exp_manager.run_dir))
+            if du.total and (du.used / du.total) >= 0.9:
+                self._send_alert('Disk space critical', f'Usage={(du.used/du.total):.2f}')
+        except Exception:
+            pass
+        try:
+            p = self.metrics_dir / 'preflight.tmp'
+            with open(p, 'w', encoding='utf-8') as f:
+                f.write('ok')
+            p.unlink(missing_ok=True)
+        except Exception as e:
+            self._send_alert('Write permission error', str(e))
+
     def _train_and_evaluate(self, feature_vectors: list, output_values: list):
         """
         Orquestra o treinamento da pipeline, do modelo e a avaliaÃ§Ã£o final.
@@ -354,9 +549,21 @@ class BuildingOptimizer:
         # 1. TREINAR A PIPELINE E TRANSFORMAR OS DADOS
         print("\n[Step 1/5] Fitting pipeline and transforming data...")
         X_scaled, y_scaled = self.feature_pipeline.fit_transform(feature_vectors, output_values)
+        try:
+            h = hashlib.sha256()
+            h.update(np.array(feature_vectors, dtype=np.float32).tobytes())
+            h.update(np.array(output_values, dtype=np.float32).tobytes())
+            dataset_hash = h.hexdigest()
+        except Exception:
+            dataset_hash = None
         print(f"[DEBUG MAIN] Vetor da Semente NORMALIZADO: {X_scaled[0]}")
         # Salva a pipeline TREINADA usando o caminho do ExperimentManager
         self.feature_pipeline.save(self.exp_manager.get_pipeline_path())
+        try:
+            with open(self.exp_manager.get_metrics_dir() / "feature_names.json", "w", encoding="utf-8") as f:
+                json.dump({"feature_names": FeatureEngineer.feature_names()}, f)
+        except Exception:
+            pass
 
         # 2. TREINAR O MODELO NEURAL
         # O nn_manager recebe os dados JÃ normalizados e retorna os conjuntos de teste (tambÃ©m normalizados).
@@ -365,6 +572,53 @@ class BuildingOptimizer:
         
         # Salva o modelo treinado usando o caminho do ExperimentManager
         self.nn_manager.save_model(self.exp_manager.get_model_path())
+
+        # 2b. Treinar classificador de validade e salvar métricas
+        try:
+            from sklearn.linear_model import LogisticRegression
+            from sklearn.metrics import accuracy_score, roc_auc_score, precision_recall_fscore_support, confusion_matrix, roc_curve
+            import joblib, json
+            if len(self._clf_features) > 0 and len(self._clf_labels) > 0:
+                print("\n[Step 2b/5] Training validity classifier...")
+                clf = LogisticRegression(max_iter=200, class_weight='balanced')
+                clf.fit(self._clf_features, self._clf_labels)
+                joblib.dump(clf, self.exp_manager.run_dir / "validity_classifier.pkl")
+                print("Validity classifier saved.")
+                # Save basic metrics
+                y_true = self._clf_labels
+                y_pred = clf.predict(self._clf_features)
+                metrics = {"accuracy": float(accuracy_score(y_true, y_pred))}
+                pr, rc, f1, _ = precision_recall_fscore_support(y_true, y_pred, labels=[0,1], zero_division=0)
+                metrics.update({
+                    "precision_by_class": {"0": float(pr[0]), "1": float(pr[1])},
+                    "recall_by_class": {"0": float(rc[0]), "1": float(rc[1])},
+                    "f1_by_class": {"0": float(f1[0]), "1": float(f1[1])},
+                    "confusion_matrix": confusion_matrix(y_true, y_pred, labels=[0,1]).tolist()
+                })
+                try:
+                    proba = clf.predict_proba(self._clf_features)
+                    metrics["roc_auc"] = float(roc_auc_score(y_true, proba[:, 1]))
+                    fpr, tpr, thr = roc_curve(y_true, proba[:, 1])
+                    roc_data = {"fpr": list(map(float, fpr)), "tpr": list(map(float, tpr)), "thresholds": list(map(float, thr)), "auc": metrics.get("roc_auc")}
+                    with open(self.exp_manager.get_metrics_dir() / "roc_curve.json", "w", encoding="utf-8") as f:
+                        json.dump(roc_data, f)
+                    try:
+                        j = tpr - fpr
+                        best_idx = int(np.argmax(j))
+                        best_thr = float(thr[best_idx])
+                        with open(self.exp_manager.get_metrics_dir() / "validity_threshold.json", "w", encoding="utf-8") as f:
+                            json.dump({"threshold": best_thr}, f)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+                with open(self.exp_manager.get_metrics_dir() / "classifier.json", "w", encoding="utf-8") as f:
+                    json.dump(metrics, f)
+                print("Validity metrics saved.")
+            else:
+                print("[Step 2b/5] Skipping validity classifier training (no labels).")
+        except Exception as e:
+            print(f"Warning: Failed to train validity classifier: {e}")
 
         # 3. FAZER PREDIÃ‡Ã•ES NO CONJUNTO DE TESTE
         if X_test_scaled.size > 0:
@@ -417,10 +671,59 @@ class BuildingOptimizer:
                     # Loga os metadados com as mÃ©tricas calculadas
 
             # Loga os metadados com as mÃ©tricas REAIS que acabamos de calcular
+            summary = {
+                "experiment_id": self.exp_manager.run_dir.name,
+                "timestamp_start": None,
+                "timestamp_end": None,
+                "device": str(self.nn_manager.device),
+                "analysis_mode": self.analysis_mode,
+                "dataset_hash": dataset_hash,
+                "num_samples_trained": len(feature_vectors),
+                "num_test_samples": len(actuals_final),
+                "splits": {
+                    "test_ratio": getattr(NeuralNetConfig, "TEST_SPLIT_RATIO", None),
+                    "val_ratio": getattr(NeuralNetConfig, "VALIDATION_SPLIT_RATIO", None)
+                },
+                "nn_architecture": {
+                    "hidden_layers": getattr(NeuralNetConfig, "HIDDEN_LAYERS", None),
+                    "dropout_rate": getattr(NeuralNetConfig, "DROPOUT_RATE", None),
+                    "output_size": getattr(NeuralNetConfig, "OUTPUT_SIZE", None)
+                },
+                "hyperparams": {
+                    "learning_rate": getattr(NeuralNetConfig, "LEARNING_RATE", None),
+                    "weight_decay": getattr(NeuralNetConfig, "WEIGHT_DECAY", None),
+                    "loss_type": getattr(NeuralNetConfig, "LOSS_TYPE", None),
+                    "lr_scheduler": getattr(NeuralNetConfig, "LR_SCHEDULER", None),
+                    "patience": getattr(NeuralNetConfig, "EARLY_STOPPING_PATIENCE", None)
+                },
+                "final_metrics": final_metrics,
+                "tqs_phase_times_sec": {
+                    "modeling": float(self._last_tqs_model_time) if self._last_tqs_model_time is not None else None,
+                    "execution": float(self._last_tqs_exec_time) if self._last_tqs_exec_time is not None else None
+                }
+            }
+            try:
+                libs = {}
+                import torch, sklearn, numpy, pandas, shapely, bs4, lxml
+                libs = {
+                    "torch": getattr(torch, "__version__", None),
+                    "sklearn": getattr(sklearn, "__version__", None),
+                    "numpy": getattr(numpy, "__version__", None),
+                    "pandas": getattr(pandas, "__version__", None),
+                    "shapely": getattr(shapely, "__version__", None),
+                    "bs4": getattr(bs4, "__version__", None),
+                    "lxml": getattr(lxml, "__version__", None)
+                }
+                summary["libraries"] = libs
+            except Exception:
+                pass
+            summary["summary_text"] = "Resumo executivo do experimento e métricas finais."
+            with open(self.exp_manager.get_metrics_dir() / "summary.json", "w", encoding="utf-8") as f:
+                json.dump(summary, f)
             self.exp_manager.log_metadata({
                 "num_samples_trained": len(feature_vectors),
                 "num_test_samples": len(actuals_final),
-                "final_metrics": final_metrics # Passa o dicionÃ¡rio com os resultados
+                "final_metrics": final_metrics
             })
         else:
             print("Skipping prediction and evaluation (no test data available).")
@@ -468,7 +771,7 @@ class BuildingOptimizer:
             return None
 
 
-    def _get_analysis_results(self, segments: List[dict]) -> Tuple[Optional[float], Optional[float], Optional[List[Polygon]], Optional[List[Dict]]]:
+    def _get_analysis_results(self, segments: List[dict]) -> Tuple[Optional[float], Optional[float], Optional[List[Polygon]], Optional[List[Dict]], bool]:
         """
         Performs structural analysis based on the configured mode (Geometric or TQS).
 
@@ -504,7 +807,7 @@ class BuildingOptimizer:
                 print("  [Geometric] Step 2: Calculating total concrete volume...")
                 concrete_volume = get_geometric_concrete_volume(column_polygons, beam_definitions)
                 print(f"   Geometric Concrete Volume Estimated: {concrete_volume:.4f} mÂ³")
-                return None, concrete_volume, column_polygons, beam_definitions # Steel is None
+                return None, concrete_volume, column_polygons, beam_definitions, True # Steel is None; geometric mode assumed válido
                 
 
             except Exception as e:
@@ -519,7 +822,7 @@ class BuildingOptimizer:
 
             if model_was_created:
                 # This second function runs the analysis and extracts results.
-                steel_kgf, concrete_m3 = self._execute_tqs_analysis_and_get_results(segments)
+                steel_kgf, concrete_m3, is_valid = self._execute_tqs_analysis_and_get_results(segments)
                 # We need to get the geometry that was used for the analysis
                 if self.use_vector_input:
                     column_polygons, beam_definitions = self.length_processor.process_segments(segments)
@@ -527,12 +830,12 @@ class BuildingOptimizer:
                     column_polygons, beam_definitions = self.binary_processor.process_segments(segments)
 
                 # Return the results, which could be (None, None) if execution failed.
-                return steel_kgf, concrete_m3, column_polygons, beam_definitions
+                return steel_kgf, concrete_m3, column_polygons, beam_definitions, is_valid
 
             else:
                 # If model creation failed, abort the process for this sample.
                 print("  [TQS] Error: Aborting analysis because model creation failed.")
-                return None, None, None, None
+                return None, None, None, None, False
 
 
     def _create_tqs_structural_model(self, segments: List[dict]) -> bool:
@@ -552,6 +855,7 @@ class BuildingOptimizer:
         """
         print("  [Modeling]  Starting TQS model creation pipeline...")
         try:
+            t0 = time.time()
             # 1. Process segments into TQS-compatible geometry
             print("      Step 1: Processing segments for TQS geometry...")
             if self.use_vector_input:
@@ -577,6 +881,7 @@ class BuildingOptimizer:
                 print("      TQS Error: Failed to create building model via TQS Manager.")
                 return False
             print("      TQS model created successfully.")
+            self._last_tqs_model_time = time.time() - t0
             return True
 
         except Exception as e:
@@ -584,7 +889,7 @@ class BuildingOptimizer:
             print(traceback.format_exc())
             return False # Indicate failure 
         
-    def _execute_tqs_analysis_and_get_results(self, segments: List[dict]) -> Tuple[Optional[float], Optional[float]]:
+    def _execute_tqs_analysis_and_get_results(self, segments: List[dict]) -> Tuple[Optional[float], Optional[float], bool]:
         """
         Runs the TQS analysis on a pre-existing model and extracts the material results.    
 
@@ -598,29 +903,34 @@ class BuildingOptimizer:
         try:
             start_time_exec  = time.time()
            
-            # 3. Run TQS analysis executables
             print("      Step 3: Executing TQS global processing...")
-            RunModel(BuildingConfig.NAME) # Assumes RunModel handles TQS execution flow
-            print("      TQS global processing command issued.")
-
-            # 4. Extract results (Add delay for file writing if needed)
-            tqs_output_file = BuildingConfig.TQS_RESULTS_FILE
-            print(f"      Step 4: Extracting results from {tqs_output_file}...")
-            # Optional delay: If RunModel is async, TQS might need time to write the file.
-            timeout = 20  # seconds
-            start_wait_time  = time.time()
-            while not tqs_output_file.exists():
-                if time.time() - start_wait_time  > timeout:
-                    print(f"  [Execution] Error: Timeout after {timeout}s waiting for TQS output file.")
-                    return None, None
-                time.sleep(0.5)
+            max_attempts = int(getattr(RunConfig, 'TQS_MAX_ATTEMPTS', 3))
+            attempts = 0
+            while attempts < max_attempts:
+                RunModel(BuildingConfig.NAME)
+                print("      TQS global processing command issued.")
+                tqs_output_file = BuildingConfig.TQS_RESULTS_FILE
+                print(f"      Step 4: Extracting results from {tqs_output_file}...")
+                timeout = int(getattr(RunConfig, 'TQS_TIMEOUT_SEC', 120))
+                start_wait_time  = time.time()
+                while not tqs_output_file.exists():
+                    if time.time() - start_wait_time  > timeout:
+                        attempts += 1
+                        print(f"  [Execution] Timeout waiting for results. Retrying ({attempts}/{max_attempts})...")
+                        if attempts >= max_attempts:
+                            self._send_alert('TQS timeout', 'RESDES.HTM not produced')
+                            return None, None, False
+                        break
+                    time.sleep(0.5)
+                if tqs_output_file.exists():
+                    break
 
             print("  [Execution] Results file found. Extracting summary...")
             steel_value_str, concrete_value_str = extract_material_summary(tqs_output_file)
 
             if steel_value_str is None or concrete_value_str is None:
                 print(f"      TQS Error: Could not extract 'Totais' row or values from '{tqs_output_file}'. Check file content and format.")
-                return None, None
+                return None, None, False
 
             # 5. Convert results to float
             print("      Step 5: Parsing results...")
@@ -630,11 +940,43 @@ class BuildingOptimizer:
                 concrete_m3 = float(concrete_value_str.replace(",", "."))
             except ValueError as ve:
                  print(f"      TQS Error: Could not convert extracted results ('{steel_value_str}', '{concrete_value_str}') to numbers: {ve}")
-                 return None, None
+                 return None, None, False
 
+            det_ok = False
+            try:
+                det_ok = bool(self._error_reader._dlls_available())
+            except Exception:
+                det_ok = False
+            if not det_ok:
+                print("   TQS Critical Errors detection unavailable (DLLs).")
+            else:
+                try:
+                    print(f"   TQS Critical Errors detection active. DLL dir: {getattr(self._error_reader, '_dll_dir', None)}")
+                except Exception:
+                    pass
+            critical_errors = self._error_reader.get_critical_errors()
+            is_valid = len(critical_errors) == 0
             end_time_tqs = time.time()
-            print(f"   TQS Analysis successful ({end_time_tqs - start_time_exec:.2f}s). Steel: {steel_kgf:.2f} kgf, Concrete: {concrete_m3:.3f} mÂ³")
-            return steel_kgf, concrete_m3 
+            self._last_tqs_exec_time = end_time_tqs - start_time_exec
+            print(f"   TQS Analysis successful ({end_time_tqs - start_time_exec:.2f}s). Steel: {steel_kgf:.2f} kgf, Concrete: {concrete_m3:.3f} mÂ³ | Valid: {is_valid}")
+            if not is_valid and critical_errors:
+                print("   TQS Critical Errors detected:")
+                for err in critical_errors:
+                    try:
+                        print(f"     - Element {err.elm_number}: {err.error_header}")
+                    except Exception:
+                        pass
+                try:
+                    if self.metrics_dir:
+                        rec = {
+                            "iteration": self.current_iteration,
+                            "errors": [{"elm_number": int(e.elm_number), "error_header": str(e.error_header)} for e in critical_errors]
+                        }
+                        with open(self.metrics_dir / "tqs_errors.ndjson", "a", encoding="utf-8") as f:
+                            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                except Exception:
+                    pass
+            return steel_kgf, concrete_m3, is_valid
         
         except Exception as e:
             # Catch any unexpected errors during the TQS pipeline
@@ -642,7 +984,11 @@ class BuildingOptimizer:
             print(f"   TQS Error: An unexpected exception occurred during TQS pipeline at {error_time:.0f}: {e}")
             TQSUtil.writef(f"Error during TQS model run/extraction: {str(e)}")
             print(traceback.format_exc())
-            return None, None # Indicate failure 
+            try:
+                self._log_error('TQS pipeline', str(e))
+            except Exception:
+                pass
+            return None, None, False # Indicate failure 
 
     # -------------------------------------------------------------------------
     # Evaluation and Plotting Helper Methods (Placeholder implementations)
@@ -805,12 +1151,14 @@ class BuildingOptimizer:
 def main():
     """Main function to run the building optimization process."""
 
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s: %(message)s')
+
     # 1. Inicializa o gerenciador de experimentos.
     #    Ele usarÃ¡ o diretÃ³rio definido em config/paths.py.
     #    VocÃª pode dar um nome descritivo para a execuÃ§Ã£o.
     exp_manager = ExperimentManager(
-        base_dir=paths.EXPERIMENTS_DIR, 
-        run_name="Treino_com_1300_amostras_e_BN"
+        base_dir=paths.EXPERIMENTS_DIR,
+        run_name=f"Treino_com_{getattr(RunConfig, 'NUM_SAMPLES', getattr(RunConfig, 'NUMSAMPLES', 0))}_amostras"
     )
 
     # (Opcional, mas recomendado) Configurar o logging para salvar no diretÃ³rio do experimento

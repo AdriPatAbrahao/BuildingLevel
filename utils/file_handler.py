@@ -45,15 +45,15 @@ def save_final_vectors_to_csv(configurations: List[List[Dict]]):
 
                 for config_idx, config in enumerate(configurations):
                     for seg_idx, segment in enumerate(config):
-                        # Formatando os números com ponto decimal e sem separador de milhar                        # Formata os números sem separador de milhar e usando vírgula decimal
+                        # Formatando os números com ponto decimal e sem separador de milhar
                         writer.writerow({
                             'config_index': config_idx,
                             'segment_index': seg_idx,
-                            'start_x': f"{float(segment.get('start', (None, None))[0]):,.6f}",
-                            'start_y': f"{float(segment.get('start', (None, None))[1]):,.6f}",
-                            'end_x': f"{float(segment.get('end', (None, None))[0]):,.6f}",
-                            'end_y': f"{float(segment.get('end', (None, None))[1]):,.6f}",
-                            'length': f"{float(segment.get('length', None)):,.6f}"
+                            'start_x': f"{float(segment.get('start', (None, None))[0]):.6f}",
+                            'start_y': f"{float(segment.get('start', (None, None))[1]):.6f}",
+                            'end_x': f"{float(segment.get('end', (None, None))[0]):.6f}",
+                            'end_y': f"{float(segment.get('end', (None, None))[1]):.6f}",
+                            'length': f"{float(segment.get('length', None)):.6f}"
                         })
         print(f"Vetores finais salvos com sucesso em: {output_path}")
 

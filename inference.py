@@ -1,6 +1,7 @@
-﻿# BuildingOptimization/inference.py
+# BuildingOptimization/inference.py
 
 import traceback
+import os
 from pathlib import Path
 import json
 import time
@@ -25,7 +26,10 @@ from joblib import load
 # Você só precisa definir o ID do experimento que quer usar.
 # Ex: "20250830-180000_Treino_com_200_amostras_e_BN"
 ##EXPERIMENT_ID = "20250901-234401_Treino_com_200_amostras_e_BN"
-EXPERIMENT_ID = "20250908-000837_Treino_com_1300_amostras_e_BN"
+# Default experiment ID used when no environment override is provided
+_DEFAULT_EXPERIMENT_ID = "20251117-180524_Treino_com_600_amostras"
+# Allow overriding via environment variable for operational flexibility
+EXPERIMENT_ID = os.getenv("BUILDOPT_EXPERIMENT_ID", _DEFAULT_EXPERIMENT_ID)
 
 
 EXPERIMENT_DIR = Path("outputs/experiments") / EXPERIMENT_ID
@@ -34,14 +38,38 @@ MODEL_PATH = EXPERIMENT_DIR / "trained_model.pth"
 CONFIG_SNAPSHOT_PATH = EXPERIMENT_DIR / "config_snapshot.json"
 
 class BuildingInference:
-    def __init__(self):
+    """
+    Orchestrates inference using saved scalers and model artifacts.
+
+    Loads experiment artifacts (feature pipeline, surrogate model, optional
+    validity classifier), validates compatibility against the snapshot, and
+    provides utilities for CSV-based prediction and TQS comparison.
+    """
+    def __init__(self, experiment_id: str | None = None):
         self.validity_classifier = None
         self._validity_classifier_classes = None
+        self.invalid_threshold = None
         try:
             print("--- Inicializando o Orquestrador de Inferência ---")
-
-            if not EXPERIMENT_DIR.exists():
-                raise FileNotFoundError(f"Diretório do experimento não encontrado: '{EXPERIMENT_DIR}'")
+            eid = experiment_id or EXPERIMENT_ID
+            exp_dir = paths.EXPERIMENTS_DIR / eid
+            if not exp_dir.exists():
+                base = paths.EXPERIMENTS_DIR
+                latest = None
+                if base.exists():
+                    dirs = [d for d in base.iterdir() if d.is_dir()]
+                    if dirs:
+                        dirs.sort(key=lambda p: p.stat().st_mtime)
+                        latest = dirs[-1]
+                if latest is None:
+                    raise FileNotFoundError(f"Diretório do experimento não encontrado: '{exp_dir}'")
+                print(f"Info: EXPERIMENT_ID '{eid}' não encontrado. Usando o mais recente '{latest.name}'.")
+                exp_dir = latest
+            globals()['EXPERIMENT_DIR'] = exp_dir
+            globals()['EXPERIMENT_ID'] = exp_dir.name
+            globals()['PIPELINE_PATH'] = exp_dir / "feature_pipeline.pkl"
+            globals()['MODEL_PATH'] = exp_dir / "trained_model.pth"
+            globals()['CONFIG_SNAPSHOT_PATH'] = exp_dir / "config_snapshot.json"
             
             # Carrega a pipeline e o modelo
             print(f"Carregando artefatos do experimento: '{EXPERIMENT_ID}'")
@@ -67,8 +95,20 @@ class BuildingInference:
             else:
                 print(f"Info: Validity classifier not found at '{classifier_path}'.")
 
+            thr_path = EXPERIMENT_DIR / "metrics" / "validity_threshold.json"
+            if thr_path.exists():
+                try:
+                    with open(thr_path, 'r', encoding='utf-8') as f:
+                        obj = json.load(f)
+                        self.invalid_threshold = float(obj.get('threshold'))
+                        print(f"Invalidity threshold loaded: {self.invalid_threshold}")
+                except Exception as te:
+                    print(f"Warning: failed to load validity threshold: {te}")
+
             # Valida consistência entre snapshot do experimento e o ambiente atual
             self._validate_experiment_snapshot()
+            # Calibra limiar de invalidez a partir da curva ROC (se disponível)
+            self._calibrate_invalid_threshold_from_roc()
 
         except FileNotFoundError as e:
             raise FileNotFoundError(f"Erro: Artefato não encontrado! Verifique se o ID do experimento ('{EXPERIMENT_ID}') está correto e se os arquivos existem. Detalhe: {e}")
@@ -79,7 +119,19 @@ class BuildingInference:
         print("--- Orquestrador pronto ---") 
         
     def _predict_validity_probability(self, feature_vector):
-        """Returns probability that the sample is INVALID (class 0) if classifier is available."""
+        """
+        Return the probability of the sample being INVALID (class 0).
+
+        Parameters
+        ----------
+        feature_vector : list[float]
+            Feature vector used by the classifier.
+
+        Returns
+        -------
+        float | None
+            Probability in [0, 1] if classifier is available; otherwise `None`.
+        """
         if self.validity_classifier is None or not feature_vector:
             return None
         try:
@@ -93,15 +145,47 @@ class BuildingInference:
             print(f"Warning: validity classifier failed to evaluate sample: {err}")
             return None
 
-    def _validate_experiment_snapshot(self):
+    def _calibrate_invalid_threshold_from_roc(self):
+        try:
+            roc_path = EXPERIMENT_DIR / "metrics" / "roc_curve.json"
+            thr_path = EXPERIMENT_DIR / "metrics" / "validity_threshold.json"
+            if thr_path.exists():
+                return
+            if not roc_path.exists():
+                return
+            with open(roc_path, 'r', encoding='utf-8') as f:
+                obj = json.load(f)
+            fpr = obj.get('fpr')
+            tpr = obj.get('tpr')
+            thresholds = obj.get('thresholds')
+            if not (isinstance(fpr, list) and isinstance(tpr, list) and isinstance(thresholds, list)):
+                return
+            if not (len(fpr) == len(tpr) == len(thresholds)):
+                return
+            # Youden's J statistic
+            best_idx = int(np.argmax(np.array(tpr) - np.array(fpr)))
+            best_thr = float(thresholds[best_idx])
+            with open(thr_path, 'w', encoding='utf-8') as f:
+                json.dump({"threshold": best_thr, "method": "youden"}, f, ensure_ascii=False, indent=2)
+            self.invalid_threshold = best_thr
+            print(f"Calibrated invalidity threshold from ROC: {best_thr}")
+        except Exception:
+            pass
 
+    def _validate_experiment_snapshot(self):
         """
-        Compara config_snapshot.json do experimento com o estado atual de
-        - BuildingConfig (nome e coordenadas)
-        - VectorConfig (contagem de segmentos de parede)
-        - Constants (largura de viga)
-        - Tamanho de features (scaler e FeatureEngineer) vs INPUT_SIZE salvo
-        Lança erro em caso de divergência relevante.
+        Validate experiment `config_snapshot.json` against current environment.
+
+        Checks include:
+        - BuildingConfig name and coordinates
+        - VectorConfig wall segment count
+        - Constants (beam thickness)
+        - Feature size: scaler vs snapshot vs recomputed features
+
+        Raises
+        ------
+        RuntimeError
+            If hard incompatibilities are detected between model/scaler/features.
         """
         try:
             if not CONFIG_SNAPSHOT_PATH.exists():
@@ -210,16 +294,17 @@ class BuildingInference:
     
     def predict_from_csv(self, csv_path_or_buffer) -> tuple[float, float, float | None]:
         """
-        Executa uma predição a partir de um arquivo CSV ou buffer de memória.
-        
-        Esta é a função centralizada que será usada tanto pela otimização
-        quanto pela inferência.
+        Predict steel from CSV/buffer and compute geometric concrete volume.
 
-        Args:
-            csv_path_or_buffer: O caminho para o arquivo CSV ou um buffer StringIO.
+        Parameters
+        ----------
+        csv_path_or_buffer : str | io.StringIO
+            Path to the CSV or an in-memory buffer.
 
-        Returns:
-            Uma tupla (aco_predito, concreto_predito, prob_invalid).
+        Returns
+        -------
+        tuple[float, float, float | None]
+            `(steel_pred, concrete_geom, prob_invalid)`; probability may be `None`.
         """
         # 1. Lê os segmentos do CSV/buffer usando o método já existente
         self.input_processor.csv_path = csv_path_or_buffer
@@ -260,11 +345,13 @@ class BuildingInference:
 
     def run_comparison(self):
         """
-        Executa o fluxo completo:
-        1. Lê o CSV de teste e o transforma em um vetor de features.
-        2. Usa o modelo surrogate (.pth) para fazer uma predição.
-        3. Roda a análise completa no TQS para obter o resultado real.
-        4. Apresenta um relatório comparativo.
+        End-to-end comparison: surrogate prediction vs TQS real analysis.
+
+        Steps:
+        1) Read CSV → geometry → features
+        2) Predict steel with surrogate model
+        3) Run TQS global processing to obtain real values
+        4) Print a comparison report
         """
         try:
             # --- ETAPA 1: Ler o CSV para obter os segmentos ---
@@ -332,8 +419,43 @@ class BuildingInference:
             print(f"Erro: {e}")
             print(traceback.format_exc())
 
+    def run_tqs_on_csv(self, csv_path: str) -> tuple[float, float]:
+        """
+        Executa o TQS diretamente a partir de um CSV de segmentos e retorna (aço, concreto).
+
+        Parameters
+        ----------
+        csv_path : str
+            Caminho para o arquivo CSV no formato `x;y;dx;dy;length;maxlength`.
+
+        Returns
+        -------
+        tuple[float, float]
+            `(aco_real, concreto_real)` lidos do TQS após o processamento global.
+        """
+        self.input_processor.csv_path = csv_path
+        segments = self.input_processor.read_length_from_csv()
+        if not segments:
+            raise ValueError(f"Não foi possível ler os segmentos do arquivo '{csv_path}'.")
+        aco_real, concreto_real = self._execute_full_tqs_analysis(segments)
+        if aco_real is None:
+            raise RuntimeError("Falha ao executar a análise completa do TQS.")
+        return aco_real, concreto_real
+
     def _execute_full_tqs_analysis(self, segments: list) -> tuple:
-        """Orquestra a criação e execução do modelo no TQS."""
+        """
+        Create structural model in TQS and execute global processing.
+
+        Parameters
+        ----------
+        segments : list
+            Input segments to build the structural model.
+
+        Returns
+        -------
+        tuple
+            `(steel_real, concrete_real)` parsed from TQS outputs.
+        """
         tqs_manager = TQSModelManager(BuildingConfig.NAME)
         
         column_polygons, beam_definitions = self.input_processor.process_segments(segments)
@@ -348,7 +470,7 @@ class BuildingInference:
         RunModel(BuildingConfig.NAME)
         
         tqs_output_file = BuildingConfig.TQS_RESULTS_FILE
-        timeout = 20
+        timeout = int(getattr(BuildingConfig, 'TQS_TIMEOUT_SEC', 120)) if hasattr(BuildingConfig, 'TQS_TIMEOUT_SEC') else 120
         start_wait_time  = time.time()
         while not tqs_output_file.exists():
             if time.time() - start_wait_time  > timeout:
@@ -369,7 +491,7 @@ class BuildingInference:
         return aco_real, concreto_real
 
     def _generate_report(self, aco_predito, concreto_predito, aco_real, concreto_real):
-        """Imprime o relatório final formatado."""
+        """Print the final formatted comparison report."""
         print("\n[PASSO 4/4] Relatório Final de Comparação")
         print("-" * 75)
 
@@ -380,10 +502,22 @@ class BuildingInference:
         print("-" * 75)
         print(f"{'Volume Concreto (m³)':<20} | {concreto_predito:>20.2f} | {concreto_real:>15.2f} | {erro_concreto:>9.2f}%")
         print(f"{'Peso Aço (kgf)':<20} | {aco_predito:>20.2f} | {aco_real:>15.2f} | {erro_aco:>9.2f}%")
-        print("-" * 75)
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--csv", default=str(paths.RESULTS_DIR / "solucao_otima.csv"))
+    parser.add_argument("--predict", action="store_true")
+    parser.add_argument("--exp", default=None)
+    args = parser.parse_args()
+    inf = BuildingInference(args.exp)
+    if args.predict:
+        steel_pred, conc_geom, prob = inf.predict_from_csv(args.csv)
+        print(f"Surrogate: steel={steel_pred:.2f} kgf, concrete_geom={conc_geom:.3f} m³, prob_invalid={prob}")
+    aco_real, concreto_real = inf.run_tqs_on_csv(args.csv)
+    print(f"TQS: steel={aco_real:.2f} kgf, concrete={concreto_real:.3f} m³")
+    print("-" * 75)
 
 
 
-if __name__ == '__main__':
-    inference_runner = BuildingInference()
-    inference_runner.run_comparison()
+# (main) bloco único acima

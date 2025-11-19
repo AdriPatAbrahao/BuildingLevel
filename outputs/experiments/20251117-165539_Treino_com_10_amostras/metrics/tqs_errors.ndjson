@@ -1,0 +1,4 @@
+{"iteration": 0, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 1, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 2, "errors": [{"elm_number": 5, "error_header": "Pilar sem dimensionamento"}]}
+{"iteration": 4, "errors": [{"elm_number": 2, "error_header": "Vo da Viga com dimenses de viga parede"}]}

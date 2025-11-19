@@ -8,15 +8,32 @@ from utils.geometric_calculator import get_geometric_concrete_volume
 
 from inference import BuildingInference
 from optimization.design_space import DesignSpace
+from config.settings import ObjectiveConfig
 
 class ObjectiveFunction:
+    """
+    Cost function combining surrogate steel prediction and geometric concrete volume.
+
+    Parameters
+    ----------
+    design_space : DesignSpace
+        Design space providing bounds and geometry reconstruction utilities.
+    inference_runner : BuildingInference
+        Inference orchestrator used to predict steel from CSV/buffer.
+
+    Notes
+    -----
+    Prices and thresholds are read from `ObjectiveConfig` with safe defaults.
+    Input vectors are discretized to the nearest multiple of `COMPRIMENTO_PASSO`.
+    """
     def __init__(self, design_space: DesignSpace, inference_runner: BuildingInference):
         # --- PREÇOS E PARÂMETROS ---
-        self.PRECO_CONCRETO_M3 = 10.0
-        self.PRECO_ACO_KGF = 100.0
-        self.COMPRIMENTO_PASSO = 20.0  # PASSO DISCRETO (cm)
-        self.INVALID_PROB_THRESHOLD = 0.5
-        self.INVALID_COST_PENALTY = 1_000_000
+        # Prefer values from ObjectiveConfig; fallback to previous defaults for backward compatibility
+        self.PRECO_CONCRETO_M3 = getattr(ObjectiveConfig, "CONCRETE_PRICE_M3", 10.0)
+        self.PRECO_ACO_KGF = getattr(ObjectiveConfig, "STEEL_PRICE_KG", 100.0)
+        self.COMPRIMENTO_PASSO = getattr(ObjectiveConfig, "LENGTH_STEP_CM", 20.0)  # PASSO DISCRETO (cm)
+        self.INVALID_PROB_THRESHOLD = getattr(ObjectiveConfig, "INVALID_PROB_THRESHOLD", 0.5)
+        self.INVALID_COST_PENALTY = getattr(ObjectiveConfig, "INVALID_COST_PENALTY", 1_000_000)
         # ---------------------------
 
         self.design_space = design_space
@@ -29,8 +46,17 @@ class ObjectiveFunction:
 
     def _discretize_vector(self, continuous_vector: np.ndarray) -> np.ndarray:
         """
-        Arredonda cada valor no vetor para o múltiplo mais próximo do passo definido.
-        Ex: Se passo=20, 57.5 -> 60.0; 48.1 -> 40.0; 31.9 -> 40.0
+        Round each value to the nearest multiple of the configured step.
+
+        Parameters
+        ----------
+        continuous_vector : np.ndarray
+            Continuous vector proposed by the optimizer.
+
+        Returns
+        -------
+        np.ndarray
+            Discretized and clipped vector within design bounds.
         """
         # (valor / passo) -> arredonda -> * passo
         discretized = np.round(continuous_vector / self.COMPRIMENTO_PASSO) * self.COMPRIMENTO_PASSO
@@ -40,51 +66,61 @@ class ObjectiveFunction:
 
     def calculate_cost(self, vector: np.ndarray) -> float:
         """
-        Calcula o custo de uma única solução (vetor de comprimentos).
+        Compute the total cost for a single candidate vector.
+
+        Parameters
+        ----------
+        vector : np.ndarray
+            Continuous vector of lengths proposed by the optimizer.
+
+        Returns
+        -------
+        float
+            Total cost combining steel (surrogate) and concrete (geometry),
+            including penalties for invalid probability and negative values.
+
+        Raises
+        ------
+        RuntimeError
+            Propagated in severe mismatches; otherwise returns `inf` on errors.
+
+        Examples
+        --------
+        >>> obj = ObjectiveFunction(ds, inference)
+        >>> x = np.array([120.0, 60.0, 80.0])
+        >>> cost = obj.calculate_cost(x)
         """
         try:
-            # --- INÍCIO DA MODIFICAÇÃO ---
-            # >> PASSO 2: Discretize o vetor recebido do otimizador <<
-            discretized_vector = self._discretize_vector(vector)
-            # --- FIM DA MODIFICAÇÃO ---
-
-            # 1. Converter o vetor JÁ DISCRETIZADO em um DataFrame de geometria
-            geometry_df = self.design_space.create_geometry_from_vector(discretized_vector)
-
-            # 2. Simular um arquivo CSV em memória a partir do DataFrame
-            csv_buffer = io.StringIO()
-            # Usa decimal=',' para casar com o LengthProcessor (reader)
-            geometry_df.to_csv(csv_buffer, index=False, sep=';', decimal=',')
-            csv_buffer.seek(0)
-
-            # 3. Predição do aço e cálculo geométrico do concreto
-            # Reutiliza a função centralizada de inferência, que já:
-            #  - Lê o CSV/buffer
-            #  - Gera a geometria e extrai features
-            #  - Calcula o concreto geométrico
-            aco_predito, concreto_predito, prob_invalid = self.inference_runner.predict_from_csv(csv_buffer)
-
-            # 4. Calcular o custo total
-            custo_total = (aco_predito * self.PRECO_ACO_KGF) + (concreto_predito * self.PRECO_CONCRETO_M3)
-
-            if prob_invalid is not None and prob_invalid >= self.INVALID_PROB_THRESHOLD:
-                custo_total += self.INVALID_COST_PENALTY
-                print(f"[Objective] Penalizing due to high invalid probability: {prob_invalid:.2f}")
-
-            # Penalidade para valores negativos
-            if aco_predito < 0 or concreto_predito < 0:
-                custo_total += 1_000_000
-
-            return custo_total
-
+            metrics = self.compute_metrics(vector)
+            return float(metrics["cost"])
         except Exception as e:
-            # ... (seu bloco de erro para debug permanece o mesmo) ...
             print("\n--- ERRO DENTRO DA FUNÇÃO OBJETIVO ---")
             print(f"Erro ao avaliar o vetor (contínuo): {vector}")
-            print(f"Vetor (discretizado): {discretized_vector if 'discretized_vector' in locals() else 'N/A'}")
             print(f"Tipo de Erro: {type(e).__name__}")
             print(f"Mensagem: {e}")
-            print("Traceback completo:")
             print(traceback.format_exc())
-            print("---------------------------------------\n")
             return float('inf')
+
+    def compute_metrics(self, vector: np.ndarray) -> dict:
+        try:
+            discretized_vector = self._discretize_vector(vector)
+            geometry_df = self.design_space.create_geometry_from_vector(discretized_vector)
+            csv_buffer = io.StringIO()
+            geometry_df.to_csv(csv_buffer, index=False, sep=';', decimal=',')
+            csv_buffer.seek(0)
+            steel, concrete, prob_invalid = self.inference_runner.predict_from_csv(csv_buffer)
+            cost = (steel * self.PRECO_ACO_KGF) + (concrete * self.PRECO_CONCRETO_M3)
+            thr = getattr(self.inference_runner, 'invalid_threshold', None) or self.INVALID_PROB_THRESHOLD
+            if prob_invalid is not None and prob_invalid >= thr:
+                cost += self.INVALID_COST_PENALTY
+            if steel < 0 or concrete < 0:
+                cost += 1_000_000
+            return {
+                "vector": discretized_vector.tolist(),
+                "steel": float(steel),
+                "concrete": float(concrete),
+                "prob_invalid": float(prob_invalid) if prob_invalid is not None else None,
+                "cost": float(cost)
+            }
+        except Exception as e:
+            raise e

@@ -8,6 +8,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from typing import List, Optional, Dict, Any, Tuple
 import os # Para salvar/carregar o modelo
+import time
 from config.settings import BuildingConfig
 
 # Importa a arquitetura da rede neural e as configurações
@@ -67,10 +68,43 @@ class NeuralNetworkManager:
         patience_counter = 0
         best_model_state = None
 
+        use_sched = bool(getattr(NeuralNetConfig, 'LR_SCHEDULER', False))
+        if use_sched:
+            sched_patience = int(getattr(NeuralNetConfig, 'LR_SCHEDULER_PATIENCE', 10))
+            sched_factor = float(getattr(NeuralNetConfig, 'LR_SCHEDULER_FACTOR', 0.5))
+            scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=sched_patience, factor=sched_factor)
+        else:
+            scheduler = None
+
         print(f"Starting training for {self.num_epochs} epochs...")
         for epoch in range(self.num_epochs):
+            epoch_start = time.time() if True else None
             train_loss = self._run_train_epoch(train_loader, criterion, optimizer)
             val_loss = self._run_eval_epoch(val_loader, criterion)
+            if scheduler is not None:
+                scheduler.step(val_loss)
+            lr = optimizer.param_groups[0]['lr']
+            epoch_dur = (time.time() - epoch_start) if epoch_start is not None else None
+            if self.metrics_dir:
+                try:
+                    from config.settings import RunConfig
+                    if getattr(RunConfig, 'METRICS_LOG_FORMAT', 'json') == 'json':
+                        import json, os
+                        os.makedirs(self.metrics_dir, exist_ok=True)
+                        epochs_path = self.metrics_dir / 'epochs.ndjson'
+                        rec = {
+                            'epoch': epoch + 1,
+                            'train_loss': float(train_loss),
+                            'val_loss': float(val_loss),
+                            'epoch_duration_sec': float(epoch_dur) if epoch_dur is not None else None,
+                            'learning_rate': float(lr),
+                            'gradients_mean_by_layer': (self._last_grad_stats or {}).get('mean_abs'),
+                            'gradients_norm_by_layer': (self._last_grad_stats or {}).get('l2_norm')
+                        }
+                        with open(epochs_path, 'a', encoding='utf-8') as f:
+                            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                except Exception:
+                    pass
             
             print(f'Epoch [{epoch+1}/{self.num_epochs}], Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}')
 
@@ -208,22 +242,42 @@ class NeuralNetworkManager:
             hidden_layers=NeuralNetConfig.HIDDEN_LAYERS,
             dropout_rate=NeuralNetConfig.DROPOUT_RATE
         ).to(self.device)
-        criterion = nn.MSELoss()
-        optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
+        loss_type = getattr(NeuralNetConfig, 'LOSS_TYPE', 'mse')
+        if loss_type == 'huber':
+            criterion = nn.HuberLoss()
+        else:
+            criterion = nn.MSELoss()
+        weight_decay = float(getattr(NeuralNetConfig, 'WEIGHT_DECAY', 0.0))
+        optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate, weight_decay=weight_decay)
         return criterion, optimizer
 
     def _run_train_epoch(self, loader: DataLoader, criterion: nn.Module, optimizer: optim.Optimizer) -> float:
         """Executa uma época de treino."""
         self.model.train()
         total_loss = 0.0
-        for batch_X, batch_y in loader:
+        last_stats_mean = {}
+        last_stats_norm = {}
+        for i, (batch_X, batch_y) in enumerate(loader):
             batch_X, batch_y = batch_X.to(self.device), batch_y.to(self.device)
             optimizer.zero_grad()
             outputs = self.model(batch_X)
             loss = criterion(outputs, batch_y)
             loss.backward()
+            if i == len(loader) - 1:
+                try:
+                    from config.settings import RunConfig
+                    if getattr(RunConfig, 'LOG_EPOCH_GRADIENTS', 'last_batch'):
+                        for name, p in self.model.named_parameters():
+                            if p.grad is None:
+                                continue
+                            g = p.grad.detach()
+                            last_stats_mean[name] = float(g.abs().mean().item())
+                            last_stats_norm[name] = float(g.norm(2).item())
+                except Exception:
+                    pass
             optimizer.step()
             total_loss += loss.item()
+        self._last_grad_stats = {'mean_abs': last_stats_mean, 'l2_norm': last_stats_norm}
         return total_loss / len(loader)
 
     def _run_eval_epoch(self, loader: DataLoader, criterion: nn.Module) -> float:
@@ -237,3 +291,5 @@ class NeuralNetworkManager:
                 loss = criterion(outputs, batch_y)
                 total_loss += loss.item()
         return total_loss / len(loader)
+        self.metrics_dir: Optional[Path] = None
+        self._last_grad_stats: Optional[Dict[str, Any]] = None

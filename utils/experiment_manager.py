@@ -28,11 +28,13 @@ class ExperimentManager:
         self.run_dir = base_dir / dir_name
         self.plots_dir = self.run_dir / "plots"
         self.images_dir = self.run_dir / "images"
+        self.metrics_dir = self.run_dir / "metrics"
         
         # Cria a estrutura de diretórios
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.plots_dir.mkdir(exist_ok=True)
         self.images_dir.mkdir(exist_ok=True)
+        self.metrics_dir.mkdir(exist_ok=True)
         
         print(f"[ExperimentManager] Nova execução iniciada: {self.run_dir.name}")
         print(f"[ExperimentManager] Diretório: {self.run_dir.resolve()}")
@@ -83,3 +85,14 @@ class ExperimentManager:
 
     def get_pipeline_path(self) -> Path:
         return self.run_dir / "feature_pipeline.pkl"
+
+    def get_metrics_dir(self) -> Path:
+        return self.metrics_dir
+
+    def write_json(self, path: Path, obj: Dict[str, Any]):
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(obj, f, ensure_ascii=False)
+
+    def append_ndjson(self, path: Path, obj: Dict[str, Any]):
+        with open(path, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(obj, ensure_ascii=False) + "\n")
