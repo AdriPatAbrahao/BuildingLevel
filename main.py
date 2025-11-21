@@ -576,11 +576,17 @@ class BuildingOptimizer:
         # 2b. Treinar classificador de validade e salvar métricas
         try:
             from sklearn.linear_model import LogisticRegression
+            from sklearn.pipeline import make_pipeline
+            from sklearn.preprocessing import StandardScaler
             from sklearn.metrics import accuracy_score, roc_auc_score, precision_recall_fscore_support, confusion_matrix, roc_curve
             import joblib, json
             if len(self._clf_features) > 0 and len(self._clf_labels) > 0:
                 print("\n[Step 2b/5] Training validity classifier...")
-                clf = LogisticRegression(max_iter=200, class_weight='balanced')
+                # Usa StandardScaler para manter a mesma escala na inferência (via pipeline salvo)
+                clf = make_pipeline(
+                    StandardScaler(),
+                    LogisticRegression(max_iter=1000, class_weight='balanced')
+                )
                 clf.fit(self._clf_features, self._clf_labels)
                 joblib.dump(clf, self.exp_manager.run_dir / "validity_classifier.pkl")
                 print("Validity classifier saved.")
@@ -996,7 +1002,7 @@ class BuildingOptimizer:
 
     def _evaluate_and_report(self, predictions: List[List[float]], actual_values: List[List[float]]):
         """
-        Calculates and prints evaluation metrics (RÂ², MAE, percentage error) for the test set predictions.
+        Calculates and prints evaluation metrics (R2, MAE, percentage error) for the test set predictions.
         """
         print("\n--- Test Set Evaluation ---")
 
@@ -1014,27 +1020,27 @@ class BuildingOptimizer:
         predicts_steel = self.nn_manager.is_trained and not self.use_geometric_estimate
 
         # Extract material-specific lists for easier calculation
-        # Extract material-specific lists for easier calculation
         has_concrete = all(len(p) >= 2 for p in predictions) and all(len(a) >= 2 for a in actual_values)
+        has_steel = all(len(p) >= 1 for p in predictions) and all(len(a) >= 1 for a in actual_values)
         concrete_predictions = [p[1] for p in predictions] if has_concrete else []
         concrete_actuals = [a[1] for a in actual_values] if has_concrete else []
         # Concrete Metrics
         if len(concrete_actuals) > 0:
             r2_concrete = r2_score(concrete_actuals, concrete_predictions)
             mae_concrete = mean_absolute_error(concrete_actuals, concrete_predictions)
-            print(f"Concrete RÂ²: {r2_concrete:.4f}")
-            print(f"Concrete MAE: {mae_concrete:.4f} mÂ³")
+            print(f"Concrete R2: {r2_concrete:.4f}")
+            print(f"Concrete MAE: {mae_concrete:.4f} m3")
         else:
             print("Concrete metrics not calculated (single-output model or no data).")
 
         # Steel Metrics (if applicable)
-        if predicts_steel:
+        if predicts_steel and has_steel:
             steel_predictions = [p[0] for p in predictions]
             steel_actuals = [a[0] for a in actual_values]
             if len(steel_actuals) > 0:
                 r2_steel = r2_score(steel_actuals, steel_predictions)
                 mae_steel = mean_absolute_error(steel_actuals, steel_predictions)
-                print(f"Steel RÂ²: {r2_steel:.4f}")
+                print(f"Steel R2: {r2_steel:.4f}")
                 print(f"Steel MAE: {mae_steel:.4f} kgf")
             else:
                 print("Steel metrics not calculated (no data).")
@@ -1053,28 +1059,33 @@ class BuildingOptimizer:
             pred = predictions[i]
             actual = actual_values[i]
 
-            if len(pred) < 2 or len(actual) < 2:
-                print(f"Skipping sample {i+1}: Invalid prediction/actual data structure.")
-                continue
+            has_concrete_sample = len(pred) >= 2 and len(actual) >= 2
+            has_steel_sample = predicts_steel and len(pred) >= 1 and len(actual) >= 1
 
-            concrete_pred = pred[1]
-            concrete_actual = actual[1]
+            if not has_concrete_sample and not has_steel_sample:
+                print(f"Skipping sample {i+1}: No comparable outputs (pred len={len(pred)}, actual len={len(actual)}).")
+                continue
 
             print(f"Test Sample {i+1}/{num_test_samples}:")
 
             # Concrete Evaluation
-            print(f"  Concrete -> Predicted: {concrete_pred:>8.2f} mÂ³ | Actual: {concrete_actual:>8.2f} mÂ³")
-            if abs(concrete_actual) > 1e-6:
-                concrete_err = abs(concrete_pred - concrete_actual) / concrete_actual * 100
-                print(f"                 Error: {concrete_err:>8.2f}%")
-                total_concrete_error_perc += concrete_err
-                valid_concrete_samples += 1
+            if has_concrete_sample:
+                concrete_pred = pred[1]
+                concrete_actual = actual[1]
+                print(f"  Concrete -> Predicted: {concrete_pred:>8.2f} m3 | Actual: {concrete_actual:>8.2f} m3")
+                if abs(concrete_actual) > 1e-6:
+                    concrete_err = abs(concrete_pred - concrete_actual) / concrete_actual * 100
+                    print(f"                 Error: {concrete_err:>8.2f}%")
+                    total_concrete_error_perc += concrete_err
+                    valid_concrete_samples += 1
+                else:
+                    absolute_diff = abs(concrete_pred - concrete_actual)
+                    print(f"                 Actual is ~0. Absolute Difference: {absolute_diff:.4f} m3")
             else:
-                absolute_diff = abs(concrete_pred - concrete_actual)
-                print(f"                 Actual is ~0. Absolute Difference: {absolute_diff:.4f} mÂ³")
+                print("  Concrete -> N/A (single-output model)")
 
             # Steel Evaluation (if applicable)
-            if predicts_steel:
+            if has_steel_sample:
                 steel_pred = pred[0]
                 steel_actual = actual[0]
                 print(f"  Steel    -> Predicted: {steel_pred:>8.2f} kgf | Actual: {steel_actual:>8.2f} kgf")
@@ -1086,6 +1097,8 @@ class BuildingOptimizer:
                 else:
                     absolute_diff = abs(steel_pred - steel_actual)
                     print(f"                 Actual is ~0. Absolute Difference: {absolute_diff:.2f} kgf")
+            elif predicts_steel:
+                print("  Steel    -> N/A for this sample (missing data)")
             print("-" * 60)
 
         # Average Errors
@@ -1103,7 +1116,6 @@ class BuildingOptimizer:
             else:
                  print("Steel Avg. Error:    Not calculated (no valid samples)")
         print("-" * 50)
-
 
     def _plot_results(self, predictions: List[List[float]], actual_values: List[List[float]], all_output_values: List[List[float]]):
         """

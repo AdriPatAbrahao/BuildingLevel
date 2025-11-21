@@ -3,7 +3,7 @@
 import numpy as np
 from typing import List, Dict
 from shapely.geometry import Polygon, LineString, MultiLineString
-
+from config.constants import DEFAULT_SLAB_VOLUME
 # --- Constantes ---
 # Fator de conversão
 CM_TO_M = 0.01 # 1 cm = 0.01 m
@@ -166,6 +166,6 @@ def get_geometric_concrete_volume(column_polygons: List[Dict], beam_definitions:
     # Use beam volume subtracting portions inside columns (face-to-face effective length)
     volume_vigas = calculate_beams_geometric_volume_with_subtractions(beam_definitions, column_polygons)
 
-    print(f"[Geométrico] Vol. Pilares: {volume_pilares:.4f} m³ | Vol. Vigas: {volume_vigas:.4f} m³")
+    print(f"[Geométrico] Vol. Pilares: {volume_pilares:.4f} m³ | Vol. Vigas: {volume_vigas:.4f} m³  | Vol. Lajes: {DEFAULT_SLAB_VOLUME:.4f} m³")
 
-    return volume_pilares + volume_vigas
+    return volume_pilares + volume_vigas + DEFAULT_SLAB_VOLUME

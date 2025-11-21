@@ -73,7 +73,7 @@ class LengthProcessor:
                     elif isinstance(gid, str) and gid.strip() == "":
                         seg["group_id"] = None
                     else:
-                        seg["group_id"] = gid
+                        seg["group_id"] = str(gid)
                 segments.append(seg)
                 
         except FileNotFoundError:

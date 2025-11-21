@@ -1,0 +1,5 @@
+{"timestamp": 1763738229.746936, "cpu_percent": 37.2, "mem_percent": 93.7, "disk_used_ratio": 0.5272858402644667, "network_ok": true}
+{"timestamp": 1763740031.3992972, "cpu_percent": 9.0, "mem_percent": 81.8, "disk_used_ratio": 0.5272889694180927, "network_ok": true}
+{"timestamp": 1763741832.8585927, "cpu_percent": 9.6, "mem_percent": 81.4, "disk_used_ratio": 0.5272894902601771, "network_ok": true}
+{"timestamp": 1763743634.329954, "cpu_percent": 18.6, "mem_percent": 77.2, "disk_used_ratio": 0.5272900152033805, "network_ok": true}
+{"timestamp": 1763745435.6295455, "cpu_percent": 10.1, "mem_percent": 80.9, "disk_used_ratio": 0.5272904950342772, "network_ok": true}

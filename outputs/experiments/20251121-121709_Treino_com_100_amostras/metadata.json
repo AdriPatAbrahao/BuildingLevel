@@ -1,0 +1,10 @@
+{
+    "num_samples_trained": 75,
+    "num_test_samples": 12,
+    "final_metrics": {
+        "steel": {
+            "r2_score": 0.6540417671203613,
+            "mean_absolute_error_kgf": 70.63048553466797
+        }
+    }
+}

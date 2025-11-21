@@ -86,7 +86,7 @@ class BuildingInference:
             if classifier_path.exists():
                 try:
                     self.validity_classifier = load(classifier_path)
-                    self._validity_classifier_classes = list(getattr(self.validity_classifier, "classes_", []))
+                    self._validity_classifier_classes = self._extract_classifier_classes(self.validity_classifier)
                     print(f"Validity classifier loaded from '{classifier_path}'.")
                 except Exception as clf_err:
                     print(f"Warning: failed to load validity classifier: {clf_err}")
@@ -136,7 +136,7 @@ class BuildingInference:
             return None
         try:
             proba = self.validity_classifier.predict_proba([feature_vector])[0]
-            classes = self._validity_classifier_classes or list(getattr(self.validity_classifier, "classes_", []))
+            classes = self._validity_classifier_classes or self._extract_classifier_classes(self.validity_classifier)
             if not classes or 0 not in classes:
                 return None
             idx_invalid = classes.index(0)
@@ -144,6 +144,23 @@ class BuildingInference:
         except Exception as err:
             print(f"Warning: validity classifier failed to evaluate sample: {err}")
             return None
+
+    def _extract_classifier_classes(self, clf):
+        """
+        Safely get class labels from a plain estimator or a Pipeline.
+        """
+        try:
+            # Direct estimator (e.g., LogisticRegression)
+            if hasattr(clf, "classes_"):
+                return list(clf.classes_)
+            # Pipeline case: assume final step is 'logisticregression' or similar
+            if hasattr(clf, "named_steps"):
+                for step in reversed(clf.named_steps.values()):
+                    if hasattr(step, "classes_"):
+                        return list(step.classes_)
+        except Exception:
+            pass
+        return []
 
     def _calibrate_invalid_threshold_from_roc(self):
         try:
