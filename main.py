@@ -549,19 +549,23 @@ class BuildingOptimizer:
         # 1. SPLIT ANTES DO SCALING E TRANSFORMAR OS DADOS
         from sklearn.model_selection import train_test_split
         print("\n[Step 1/5] Splitting data and fitting pipeline...")
+        t_split_start = time.time()
         X_train_val, X_test, y_train_val, y_test = train_test_split(
             feature_vectors, output_values, test_size=getattr(NeuralNetConfig, "TEST_SPLIT_RATIO", 0.15), random_state=42
         )
         X_train, X_val, y_train, y_val = train_test_split(
             X_train_val, y_train_val, test_size=getattr(NeuralNetConfig, "VALIDATION_SPLIT_RATIO", 0.2), random_state=42
         )
+        t_split_end = time.time()
         self.feature_pipeline.fit(X_train, y_train)
+        t_scale_start = time.time()
         X_train_scaled = self.feature_pipeline.transform_features(X_train)
         y_train_scaled = self.feature_pipeline.transform_outputs(y_train)
         X_val_scaled = self.feature_pipeline.transform_features(X_val)
         y_val_scaled = self.feature_pipeline.transform_outputs(y_val)
         X_test_scaled = self.feature_pipeline.transform_features(X_test)
         y_test_scaled = self.feature_pipeline.transform_outputs(y_test)
+        t_scale_end = time.time()
         try:
             h = hashlib.sha256()
             h.update(np.array(feature_vectors, dtype=np.float32).tobytes())
@@ -584,7 +588,9 @@ class BuildingOptimizer:
         # 2. TREINAR O MODELO NEURAL
         # O nn_manager recebe os dados JÃ normalizados e retorna os conjuntos de teste (tambÃ©m normalizados).
         print("\n[Step 2/5] Training the Neural Network...")
+        t_train_nn_start = time.time()
         self.nn_manager.train(X_train_scaled, y_train_scaled, X_val_scaled, y_val_scaled)
+        t_train_nn_end = time.time()
         
         # Salva o modelo treinado usando o caminho do ExperimentManager
         self.nn_manager.save_model(self.exp_manager.get_model_path())
@@ -606,7 +612,9 @@ class BuildingOptimizer:
                 Xc_train, Xc_test, yc_train, yc_test = train_test_split(
                     self._clf_features, self._clf_labels, test_size=0.2, stratify=self._clf_labels, random_state=42
                 )
+                t_train_clf_start = time.time()
                 clf.fit(Xc_train, yc_train)
+                t_train_clf_end = time.time()
                 joblib.dump(clf, self.exp_manager.run_dir / "validity_classifier.pkl")
                 y_train_pred = clf.predict(Xc_train)
                 train_metrics = {"accuracy": float(accuracy_score(yc_train, y_train_pred))}
@@ -648,6 +656,17 @@ class BuildingOptimizer:
                             json.dump({"threshold": best_thr, "method": "youden", "class_index": idx_invalid}, f)
                     except Exception:
                         pass
+                except Exception:
+                    pass
+                try:
+                    lr = clf.named_steps['logisticregression']
+                    coeffs = {
+                        "classes": list(map(int, lr.classes_.tolist())),
+                        "coef": lr.coef_.tolist(),
+                        "intercept": lr.intercept_.tolist()
+                    }
+                    with open(self.exp_manager.get_metrics_dir() / "classifier_coeffs.json", "w", encoding="utf-8") as f:
+                        json.dump(coeffs, f)
                 except Exception:
                     pass
                 print("Validity classifier trained and metrics saved (train/test/ROC).")
@@ -694,9 +713,18 @@ class BuildingOptimizer:
                 try:
                     r2_steel = r2_score(actuals_np[:, 0], predictions_np[:, 0])
                     mae_steel = mean_absolute_error(actuals_np[:, 0], predictions_np[:, 0])
+                    rmse_steel = float(np.sqrt(np.mean((actuals_np[:, 0] - predictions_np[:, 0])**2)))
+                    abs_err = np.abs(actuals_np[:, 0] - predictions_np[:, 0])
+                    resid_stats = {
+                        'mean_abs_error_kgf': float(np.mean(abs_err)),
+                        'std_abs_error_kgf': float(np.std(abs_err)),
+                        'max_abs_error_kgf': float(np.max(abs_err))
+                    }
                     final_metrics['steel'] = {
                         'r2_score': r2_steel,
-                        'mean_absolute_error_kgf': mae_steel
+                        'mean_absolute_error_kgf': mae_steel,
+                        'rmse_kgf': rmse_steel,
+                        'residual_stats': resid_stats
                     }
                 except IndexError:
                     print("Aviso: NÃ£o foi possÃ­vel calcular mÃ©tricas para o aÃ§o.")
@@ -736,8 +764,49 @@ class BuildingOptimizer:
                 "tqs_phase_times_sec": {
                     "modeling": float(self._last_tqs_model_time) if self._last_tqs_model_time is not None else None,
                     "execution": float(self._last_tqs_exec_time) if self._last_tqs_exec_time is not None else None
+                },
+                "timings_detailed": {
+                    "split_sec": float(t_split_end - t_split_start),
+                    "scaling_sec": float(t_scale_end - t_scale_start),
+                    "train_nn_sec": float(t_train_nn_end - t_train_nn_start),
+                    "train_classifier_sec": float(t_train_clf_end - t_train_clf_start)
                 }
             }
+            try:
+                feature_names = FeatureEngineer.feature_names()
+                baseline_val_pred_scaled = self.nn_manager.predict(X_val_scaled)
+                baseline_val_pred = self.feature_pipeline.inverse_transform_outputs(baseline_val_pred_scaled)
+                baseline_val_mae = float(mean_absolute_error(
+                    np.array(self.feature_pipeline.inverse_transform_outputs(y_val_scaled))[:, 0],
+                    np.array(baseline_val_pred)[:, 0]
+                ))
+                deltas = []
+                Xv = np.array(X_val_scaled, copy=True)
+                for j in range(Xv.shape[1]):
+                    Xp = Xv.copy()
+                    Xp[:, j] = np.random.permutation(Xp[:, j])
+                    pv_scaled = self.nn_manager.predict(Xp)
+                    pv = self.feature_pipeline.inverse_transform_outputs(pv_scaled)
+                    mae_j = float(mean_absolute_error(
+                        np.array(self.feature_pipeline.inverse_transform_outputs(y_val_scaled))[:, 0],
+                        np.array(pv)[:, 0]
+                    ))
+                    deltas.append({"feature": feature_names[j] if j < len(feature_names) else f"f{j}", "delta_mae": float(mae_j - baseline_val_mae)})
+                with open(self.exp_manager.get_metrics_dir() / "feature_importance.json", "w", encoding="utf-8") as f:
+                    json.dump({"baseline_val_mae": baseline_val_mae, "deltas": deltas}, f)
+            except Exception:
+                pass
+            try:
+                import psutil
+                proc = psutil.Process()
+                rss_mb = float(proc.memory_info().rss) / (1024*1024)
+                cpu_snapshot = float(psutil.cpu_percent(interval=0))
+                summary["resources_snapshot"] = {
+                    "cpu_percent": cpu_snapshot,
+                    "memory_rss_mb": rss_mb
+                }
+            except Exception:
+                pass
             try:
                 libs = {}
                 import torch, sklearn, numpy, pandas, shapely, bs4, lxml
@@ -754,6 +823,49 @@ class BuildingOptimizer:
             except Exception:
                 pass
             summary["summary_text"] = "Resumo executivo do experimento e métricas finais."
+            try:
+                steel_metrics = final_metrics.get('steel') or {}
+                mae_ok = None
+                r2_ok = None
+                rmse_ok = None
+                if steel_metrics:
+                    mae = steel_metrics.get('mean_absolute_error_kgf')
+                    r2s = steel_metrics.get('r2_score')
+                    rmse = steel_metrics.get('rmse_kgf')
+                    med_steel = float(np.median(actuals_np[:, 0])) if actuals_np.shape[1] > 0 else None
+                    if med_steel and mae is not None:
+                        mae_ok = bool(mae <= 0.10 * med_steel)
+                    if r2s is not None:
+                        r2_ok = bool(r2s >= 0.80)
+                    if rmse is not None and med_steel:
+                        rmse_ok = bool(rmse <= 0.12 * med_steel)
+                clf_test_path = self.exp_manager.get_metrics_dir() / "classifier_test.json"
+                clf_ok = None
+                try:
+                    if clf_test_path.exists():
+                        with open(clf_test_path, 'r', encoding='utf-8') as f:
+                            obj = json.load(f)
+                        pr = obj.get('precision_by_class', {})
+                        rc = obj.get('recall_by_class', {})
+                        auc = obj.get('roc_auc')
+                        if auc is not None:
+                            clf_ok = bool(auc >= 0.80)
+                        if rc.get('0') is not None and pr.get('0') is not None:
+                            clf_ok = bool((rc['0'] >= 0.80) and (pr['0'] >= 0.60)) if clf_ok is None else (clf_ok and (rc['0'] >= 0.80) and (pr['0'] >= 0.60))
+                except Exception:
+                    pass
+                tqs_ok = None
+                if self._last_tqs_exec_time is not None:
+                    tqs_ok = True
+                summary["criteria_status"] = {
+                    "steel_mae_ok": mae_ok,
+                    "steel_r2_ok": r2_ok,
+                    "steel_rmse_ok": rmse_ok,
+                    "classifier_ok": clf_ok,
+                    "tqs_ok": tqs_ok
+                }
+            except Exception:
+                pass
             with open(self.exp_manager.get_metrics_dir() / "summary.json", "w", encoding="utf-8") as f:
                 json.dump(summary, f)
             self.exp_manager.log_metadata({
