@@ -15,7 +15,7 @@ class RunConfig:
     USE_GEOMETRIC_ESTIMATE = False
     
     # --- Geração de Dados ---
-    NUM_SAMPLES = 100
+    NUM_SAMPLES = 1300
     NUMSAMPLES = NUM_SAMPLES
     MAX_ITERATION_FACTOR = 3 # Multiplicador para tentativas de geração
 
