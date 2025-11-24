@@ -47,6 +47,19 @@ class FeaturePipeline:
         
         return X_scaled, y_scaled
 
+    def fit(self, feature_vectors: List[List[float]], outputs: List[List[float]]) -> None:
+        X_np = np.array(feature_vectors, dtype=np.float32)
+        y_np = np.array(outputs, dtype=np.float32)
+        self.scaler_X.fit(X_np)
+        self.scaler_y.fit(y_np)
+        self.is_fitted = True
+
+    def transform_outputs(self, outputs: List[List[float]]) -> np.ndarray:
+        if not self.is_fitted:
+            raise RuntimeError("A pipeline precisa ser 'fitada' antes de transformar dados.")
+        y_np = np.array(outputs, dtype=np.float32)
+        return self.scaler_y.transform(y_np)
+
     def transform_features(self, feature_vectors: List[List[float]]) -> np.ndarray:
         """
         Transform features using the fitted scaler (inference phase).

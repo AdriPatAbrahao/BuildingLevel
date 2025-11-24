@@ -546,9 +546,22 @@ class BuildingOptimizer:
         Orquestra o treinamento da pipeline, do modelo e a avaliaÃ§Ã£o final.
         Este mÃ©todo substitui a lÃ³gica que estava espalhada em _train_model e _predict_on_test_set.
         """
-        # 1. TREINAR A PIPELINE E TRANSFORMAR OS DADOS
-        print("\n[Step 1/5] Fitting pipeline and transforming data...")
-        X_scaled, y_scaled = self.feature_pipeline.fit_transform(feature_vectors, output_values)
+        # 1. SPLIT ANTES DO SCALING E TRANSFORMAR OS DADOS
+        from sklearn.model_selection import train_test_split
+        print("\n[Step 1/5] Splitting data and fitting pipeline...")
+        X_train_val, X_test, y_train_val, y_test = train_test_split(
+            feature_vectors, output_values, test_size=getattr(NeuralNetConfig, "TEST_SPLIT_RATIO", 0.15), random_state=42
+        )
+        X_train, X_val, y_train, y_val = train_test_split(
+            X_train_val, y_train_val, test_size=getattr(NeuralNetConfig, "VALIDATION_SPLIT_RATIO", 0.2), random_state=42
+        )
+        self.feature_pipeline.fit(X_train, y_train)
+        X_train_scaled = self.feature_pipeline.transform_features(X_train)
+        y_train_scaled = self.feature_pipeline.transform_outputs(y_train)
+        X_val_scaled = self.feature_pipeline.transform_features(X_val)
+        y_val_scaled = self.feature_pipeline.transform_outputs(y_val)
+        X_test_scaled = self.feature_pipeline.transform_features(X_test)
+        y_test_scaled = self.feature_pipeline.transform_outputs(y_test)
         try:
             h = hashlib.sha256()
             h.update(np.array(feature_vectors, dtype=np.float32).tobytes())
@@ -556,7 +569,10 @@ class BuildingOptimizer:
             dataset_hash = h.hexdigest()
         except Exception:
             dataset_hash = None
-        print(f"[DEBUG MAIN] Vetor da Semente NORMALIZADO: {X_scaled[0]}")
+        try:
+            print(f"[DEBUG MAIN] Exemplo de feature NORMALIZADA (train): {X_train_scaled[0]}")
+        except Exception:
+            pass
         # Salva a pipeline TREINADA usando o caminho do ExperimentManager
         self.feature_pipeline.save(self.exp_manager.get_pipeline_path())
         try:
@@ -568,7 +584,7 @@ class BuildingOptimizer:
         # 2. TREINAR O MODELO NEURAL
         # O nn_manager recebe os dados JÃ normalizados e retorna os conjuntos de teste (tambÃ©m normalizados).
         print("\n[Step 2/5] Training the Neural Network...")
-        X_test_scaled, y_test_scaled = self.nn_manager.train(X_scaled, y_scaled)
+        self.nn_manager.train(X_train_scaled, y_train_scaled, X_val_scaled, y_val_scaled)
         
         # Salva o modelo treinado usando o caminho do ExperimentManager
         self.nn_manager.save_model(self.exp_manager.get_model_path())
@@ -582,30 +598,46 @@ class BuildingOptimizer:
             import joblib, json
             if len(self._clf_features) > 0 and len(self._clf_labels) > 0:
                 print("\n[Step 2b/5] Training validity classifier...")
-                # Usa StandardScaler para manter a mesma escala na inferência (via pipeline salvo)
                 clf = make_pipeline(
                     StandardScaler(),
                     LogisticRegression(max_iter=1000, class_weight='balanced')
                 )
-                clf.fit(self._clf_features, self._clf_labels)
+                from sklearn.model_selection import train_test_split
+                Xc_train, Xc_test, yc_train, yc_test = train_test_split(
+                    self._clf_features, self._clf_labels, test_size=0.2, stratify=self._clf_labels, random_state=42
+                )
+                clf.fit(Xc_train, yc_train)
                 joblib.dump(clf, self.exp_manager.run_dir / "validity_classifier.pkl")
-                print("Validity classifier saved.")
-                # Save basic metrics
-                y_true = self._clf_labels
-                y_pred = clf.predict(self._clf_features)
-                metrics = {"accuracy": float(accuracy_score(y_true, y_pred))}
-                pr, rc, f1, _ = precision_recall_fscore_support(y_true, y_pred, labels=[0,1], zero_division=0)
-                metrics.update({
+                y_train_pred = clf.predict(Xc_train)
+                train_metrics = {"accuracy": float(accuracy_score(yc_train, y_train_pred))}
+                pr, rc, f1, _ = precision_recall_fscore_support(yc_train, y_train_pred, labels=[0,1], zero_division=0)
+                train_metrics.update({
                     "precision_by_class": {"0": float(pr[0]), "1": float(pr[1])},
                     "recall_by_class": {"0": float(rc[0]), "1": float(rc[1])},
                     "f1_by_class": {"0": float(f1[0]), "1": float(f1[1])},
-                    "confusion_matrix": confusion_matrix(y_true, y_pred, labels=[0,1]).tolist()
+                    "confusion_matrix": confusion_matrix(yc_train, y_train_pred, labels=[0,1]).tolist()
                 })
+                with open(self.exp_manager.get_metrics_dir() / "classifier.json", "w", encoding="utf-8") as f:
+                    json.dump(train_metrics, f)
+                y_test_pred = clf.predict(Xc_test)
+                test_metrics = {"accuracy": float(accuracy_score(yc_test, y_test_pred))}
+                pr_t, rc_t, f1_t, _ = precision_recall_fscore_support(yc_test, y_test_pred, labels=[0,1], zero_division=0)
+                test_metrics.update({
+                    "precision_by_class": {"0": float(pr_t[0]), "1": float(pr_t[1])},
+                    "recall_by_class": {"0": float(rc_t[0]), "1": float(rc_t[1])},
+                    "f1_by_class": {"0": float(f1_t[0]), "1": float(f1_t[1])},
+                    "confusion_matrix": confusion_matrix(yc_test, y_test_pred, labels=[0,1]).tolist()
+                })
+                with open(self.exp_manager.get_metrics_dir() / "classifier_test.json", "w", encoding="utf-8") as f:
+                    json.dump(test_metrics, f)
                 try:
-                    proba = clf.predict_proba(self._clf_features)
-                    metrics["roc_auc"] = float(roc_auc_score(y_true, proba[:, 1]))
-                    fpr, tpr, thr = roc_curve(y_true, proba[:, 1])
-                    roc_data = {"fpr": list(map(float, fpr)), "tpr": list(map(float, tpr)), "thresholds": list(map(float, thr)), "auc": metrics.get("roc_auc")}
+                    proba_test = clf.predict_proba(Xc_test)
+                    classes = list(clf.named_steps['logisticregression'].classes_)
+                    idx_invalid = int(classes.index(0))
+                    y_inv_test = (np.array(yc_test) == 0).astype(int)
+                    roc_auc = float(roc_auc_score(y_inv_test, proba_test[:, idx_invalid]))
+                    fpr, tpr, thr = roc_curve(y_inv_test, proba_test[:, idx_invalid])
+                    roc_data = {"fpr": list(map(float, fpr)), "tpr": list(map(float, tpr)), "thresholds": list(map(float, thr)), "auc": roc_auc}
                     with open(self.exp_manager.get_metrics_dir() / "roc_curve.json", "w", encoding="utf-8") as f:
                         json.dump(roc_data, f)
                     try:
@@ -613,14 +645,12 @@ class BuildingOptimizer:
                         best_idx = int(np.argmax(j))
                         best_thr = float(thr[best_idx])
                         with open(self.exp_manager.get_metrics_dir() / "validity_threshold.json", "w", encoding="utf-8") as f:
-                            json.dump({"threshold": best_thr}, f)
+                            json.dump({"threshold": best_thr, "method": "youden", "class_index": idx_invalid}, f)
                     except Exception:
                         pass
                 except Exception:
                     pass
-                with open(self.exp_manager.get_metrics_dir() / "classifier.json", "w", encoding="utf-8") as f:
-                    json.dump(metrics, f)
-                print("Validity metrics saved.")
+                print("Validity classifier trained and metrics saved (train/test/ROC).")
             else:
                 print("[Step 2b/5] Skipping validity classifier training (no labels).")
         except Exception as e:
@@ -684,7 +714,7 @@ class BuildingOptimizer:
                 "device": str(self.nn_manager.device),
                 "analysis_mode": self.analysis_mode,
                 "dataset_hash": dataset_hash,
-                "num_samples_trained": len(feature_vectors),
+                "num_samples_trained": len(X_train),
                 "num_test_samples": len(actuals_final),
                 "splits": {
                     "test_ratio": getattr(NeuralNetConfig, "TEST_SPLIT_RATIO", None),
@@ -731,6 +761,10 @@ class BuildingOptimizer:
                 "num_test_samples": len(actuals_final),
                 "final_metrics": final_metrics
             })
+            try:
+                print("Sugestão: execute tuning offline com 'python tuning/tune_model.py' para otimizar hiperparâmetros.")
+            except Exception:
+                pass
         else:
             print("Skipping prediction and evaluation (no test data available).")
             self.exp_manager.log_metadata({

@@ -40,25 +40,18 @@ class NeuralNetworkManager:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"NeuralNetworkManager initialized. Using device: {self.device}")
 
-    def train(self, X_scaled: np.ndarray, y_scaled: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def train(self, X_train_scaled: np.ndarray, y_train_scaled: np.ndarray, X_val_scaled: np.ndarray, y_val_scaled: np.ndarray) -> None:
         """
-        Treina a rede neural nos dados JÁ NORMALIZADOS.
-        Retorna os dados de teste (também normalizados) para avaliação.
+        Treina a rede neural nos dados JÁ NORMALIZADOS (conjuntos pré-divididos).
         """
         print("--- Preparing for NN Training with Early Stopping ---")
         print("--- NNManager: Iniciando treinamento com dados pré-normalizados ---")
-        if X_scaled.size == 0 or y_scaled.size == 0:
+        if X_train_scaled.size == 0 or y_train_scaled.size == 0:
             raise ValueError("Treinamento falhou: os arrays de dados normalizados estão vazios.")
 
-        # Valida e define os tamanhos de entrada/saída dinamicamente
-        self._validate_and_set_sizes(X_scaled, y_scaled)
+        self._validate_and_set_sizes(X_train_scaled, y_train_scaled)
 
-                # 1. Dividir dados e criar DataLoaders
-        #    A divisão agora é mais simples, pois não há dados "originais" para guardar.
-        X_train_val, X_test, y_train_val, y_test = train_test_split(
-            X_scaled, y_scaled, test_size=NeuralNetConfig.TEST_SPLIT_RATIO, random_state=42
-        )
-        train_loader, val_loader = self._create_dataloaders(X_train_val, y_train_val)
+        train_loader, val_loader = self._create_dataloaders(X_train_scaled, y_train_scaled, X_val_scaled, y_val_scaled)
 
         # 3. Initialize model, loss, and optimizer
         criterion, optimizer = self._initialize_model_components()
@@ -129,7 +122,6 @@ class NeuralNetworkManager:
 
         self.is_trained = True
         print("--- NN Training Complete ---")
-        return X_test, y_test
   
     def predict(self, X_scaled: np.ndarray) -> np.ndarray:
         """
@@ -220,18 +212,13 @@ class NeuralNetworkManager:
             print(f"Aviso: OUTPUT_SIZE da config ({self._output_size}) é diferente do dado ({y.shape[1]}). Usando o tamanho do dado.")
             self._output_size = y.shape[1]
 
-    def _create_dataloaders(self, X_train_val: np.ndarray, y_train_val: np.ndarray) -> Tuple[DataLoader, DataLoader]:
-        """Cria DataLoaders de treino e validação a partir de um conjunto de dados."""
-        X_train, X_val, y_train, y_val = train_test_split(
-            X_train_val, y_train_val, test_size=NeuralNetConfig.VALIDATION_SPLIT_RATIO, random_state=42
-        )
-
+    def _create_dataloaders(self, X_train: np.ndarray, y_train: np.ndarray, X_val: np.ndarray, y_val: np.ndarray) -> Tuple[DataLoader, DataLoader]:
         train_dataset = TensorDataset(torch.tensor(X_train, dtype=torch.float32), torch.tensor(y_train, dtype=torch.float32))
         train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True)
 
         val_dataset = TensorDataset(torch.tensor(X_val, dtype=torch.float32), torch.tensor(y_val, dtype=torch.float32))
         val_loader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False)
-        
+
         return train_loader, val_loader
 
     def _initialize_model_components(self) -> Tuple[nn.Module, optim.Optimizer]:

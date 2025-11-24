@@ -53,7 +53,7 @@ class NeuralNetConfig:
 
     # --- Training Enhancements ---
     LOSS_TYPE = "mse"  # options: "mse", "huber"
-    WEIGHT_DECAY = 0.0
+    WEIGHT_DECAY = 1e-4
     LR_SCHEDULER = True
     LR_SCHEDULER_PATIENCE = 10
     LR_SCHEDULER_FACTOR = 0.5
