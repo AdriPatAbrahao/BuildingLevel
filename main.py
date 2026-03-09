@@ -39,7 +39,7 @@ import os
 
 # Project-specific imports
 # Configuration - Make sure these files exist and are configured
-from config.settings import BuildingConfig, RunConfig, NeuralNetConfig # General settings, NN config, analysis mode flag
+from config.settings import BuildingConfig, RunConfig, NeuralNetConfig, ParallelConfig # General settings, NN config, analysis mode flag
 from config.paths import FINAL_VECTORS_CSV_PATH # Path for saving final vectors CSV
 
 # Algorithm components - Core logic for processing and ML
@@ -53,6 +53,7 @@ from data.genBinary import generate_new_binary_vector # For binary input variati
 # Ensure 'tqsapi' is the correct package name in your structure
 from tqs_interface.tqs_manager import TQSModelManager # Manages TQS model creation/saving
 from tqs_interface.tqs_exec import RunModel # Executes TQS analysis jobs
+from tqs_interface.tqs_worker_pool import TQSWorkerPool  # Parallel TQS execution pool
 
 # Neural Network interaction - Encapsulates NN training/prediction
 # Ensure 'tqsapi' or 'models' is the correct path for nn_manager
@@ -276,10 +277,216 @@ class BuildingOptimizer:
     # Data Collection and Analysis Helper Methods
     # -------------------------------------------------------------------------
 
+    def _collect_training_data_parallel(
+        self, initial_segments: List[dict]
+    ) -> Tuple[List[List[float]], List[List[float]]]:
+        """
+        Parallel variant of ``_collect_training_data`` using
+        :class:`~tqs_interface.tqs_worker_pool.TQSWorkerPool`.
+
+        Keeps all worker slots continuously busy with a sliding-window
+        dispatch strategy:
+          1. Prime the pipeline by submitting one job per worker slot.
+          2. As each result arrives, immediately submit the next job.
+          3. Feature extraction (CPU-only) runs in the main process while
+             workers process the next batch.
+
+        The initial configuration is still evaluated sequentially in the
+        main process so that the first sample is always the seed geometry.
+        """
+        import copy as _copy
+
+        num_workers   = int(getattr(ParallelConfig, "NUM_WORKERS", 2))
+        base_name     = str(getattr(ParallelConfig, "BASE_NAME", "OptimBuilding"))
+        timeout_sec   = int(getattr(ParallelConfig, "TIMEOUT_SEC", 180))
+        max_iterations = self.num_target_samples * RunConfig.MAX_ITERATION_FACTOR
+
+        feature_vectors: List[List[float]] = []
+        output_values:   List[List[float]] = []
+        processed_valid = 0
+        current_iter    = 0
+        last_ck_ts      = time.time()
+
+        # ── Process seed configuration sequentially in the main process ──────
+        print(
+            f"\n--- Parallel Data Collection (TQS Mode) "
+            f"| {num_workers} worker(s) | "
+            f"target={self.num_target_samples} samples ---"
+        )
+        print("\nAnalyzing seed configuration (sequential, main process)…")
+        steel, concrete, col_polys_s, beam_defs_s, is_valid_s = (
+            self._get_analysis_results(initial_segments)
+        )
+        if concrete is None:
+            raise RuntimeError(
+                "Seed configuration analysis failed. Cannot start parallel collection."
+            )
+        fv_seed = self._extract_feature_vector(col_polys_s, beam_defs_s)
+        if fv_seed:
+            self._clf_features.append(fv_seed)
+            self._clf_labels.append(1 if is_valid_s else 0)
+            if is_valid_s:
+                if steel is None:
+                    raise RuntimeError(
+                        "Steel is None for seed. "
+                        "Use TQS mode (RunConfig.USE_GEOMETRIC_ESTIMATE=False)."
+                    )
+                feature_vectors.append(fv_seed)
+                output_values.append([steel])
+                if self.use_vector_input:
+                    self.generated_valid_configurations.append(
+                        _copy.deepcopy(initial_segments)
+                    )
+                processed_valid += 1
+        print(
+            f"Seed → steel={steel:.1f} kgf  concrete={concrete:.4f} m³  "
+            f"valid={is_valid_s}"
+        )
+
+        # ── Maps job_id → (col_polys, beam_defs, new_segments) ───────────────
+        # Kept in the main process so we can do feature extraction after results
+        in_flight: Dict[int, Tuple] = {}
+
+        def _generate_and_submit(pool: TQSWorkerPool) -> Optional[int]:
+            """Generate one variation, process segments, submit to pool."""
+            nonlocal current_iter
+            if current_iter >= max_iterations:
+                return None
+            current_iter += 1
+            try:
+                new_segs = self._generate_segment_variation(
+                    initial_segments, "random"
+                )
+                seg_hash = hashlib.sha256(
+                    json.dumps(new_segs, ensure_ascii=False).encode()
+                ).hexdigest()
+                if seg_hash in getattr(self, "_seen_segments_hash", set()):
+                    return None
+                self._seen_segments_hash.add(seg_hash)
+
+                # Segment processing is CPU-only — stays in the main process.
+                if self.use_vector_input:
+                    col_polys, beam_defs = (
+                        self.length_processor.process_segments(new_segs)
+                    )
+                else:
+                    col_polys, beam_defs = (
+                        self.binary_processor.process_segments(new_segs)
+                    )
+                if not col_polys:
+                    return None
+
+                job_id = pool.submit(col_polys, beam_defs)
+                in_flight[job_id] = (col_polys, beam_defs, new_segs)
+                return job_id
+
+            except Exception as gen_err:
+                print(f"[Parallel] Generation error (iter {current_iter}): {gen_err}")
+                return None
+
+        # ── Start the pool and fill the sliding window ────────────────────────
+        with TQSWorkerPool(
+            num_workers=num_workers,
+            base_name=base_name,
+            timeout_sec=timeout_sec,
+        ) as pool:
+            # Prime: one job per worker slot
+            primed = 0
+            while primed < num_workers and current_iter < max_iterations:
+                if _generate_and_submit(pool) is not None:
+                    primed += 1
+
+            # Sliding-window loop: collect → replenish → repeat
+            while in_flight and processed_valid < self.num_target_samples:
+                self._heartbeat_ts = time.time()
+
+                try:
+                    res = pool.get_result(timeout=float(timeout_sec) + 30)
+                except Exception as wait_err:
+                    print(
+                        f"[Parallel] Timeout waiting for result: {wait_err}. "
+                        "Stopping collection."
+                    )
+                    break
+
+                entry = in_flight.pop(res.job_id, None)
+                if entry is None:
+                    continue  # stale / unexpected job_id
+                col_polys, beam_defs, new_segs = entry
+
+                print(
+                    f"\n[Parallel] Job #{res.job_id} from [{res.slot_name}] "
+                    f"in {res.elapsed:.1f}s — success={res.success}"
+                )
+
+                if res.success:
+                    fv = self._extract_feature_vector(col_polys, beam_defs)
+                    if fv:
+                        self._clf_features.append(fv)
+                        self._clf_labels.append(1 if res.is_valid else 0)
+                        if res.is_valid:
+                            feature_vectors.append(fv)
+                            output_values.append([res.steel])
+                            if self.use_vector_input:
+                                self.generated_valid_configurations.append(
+                                    _copy.deepcopy(new_segs)
+                                )
+                            processed_valid += 1
+                            print(
+                                f"  ✔ steel={res.steel:.1f} kgf  "
+                                f"concrete={res.concrete:.4f} m³  "
+                                f"valid_count={processed_valid}/"
+                                f"{self.num_target_samples}"
+                            )
+                    else:
+                        print(
+                            f"  ⚠ Feature extraction failed for job #{res.job_id}."
+                        )
+                else:
+                    print(f"  ✘ Job failed: {res.error}")
+
+                # Checkpoint
+                if getattr(RunConfig, "CHECKPOINTS_ENABLED", True):
+                    ck_interval = max(
+                        60,
+                        int(getattr(RunConfig, "CHECKPOINT_INTERVAL_MIN", 60)) * 60
+                    )
+                    if time.time() - last_ck_ts >= ck_interval:
+                        last_ck_ts = time.time()
+                        try:
+                            self._save_checkpoint(
+                                feature_vectors, output_values, processed_valid
+                            )
+                        except Exception:
+                            pass
+
+                # Replenish: keep pipeline full while target not reached
+                if (
+                    processed_valid < self.num_target_samples
+                    and current_iter < max_iterations
+                ):
+                    _generate_and_submit(pool)
+
+        # ── Summary ───────────────────────────────────────────────────────────
+        print(
+            f"\n--- Parallel Collection Finished "
+            f"({current_iter} iterations, {processed_valid} valid samples) ---"
+        )
+        if processed_valid < self.num_target_samples:
+            print(
+                f"Warning: only {processed_valid}/{self.num_target_samples} "
+                "valid samples collected."
+            )
+        return feature_vectors, output_values
+
     def _collect_training_data(self, initial_segments: List[dict]) -> Tuple[List[List[float]], List[List[float]]]:
         """
         Generates configurations and collects feature vectors and corresponding
         analysis outputs (TQS or Geometric).
+
+        Delegates to the parallel implementation when
+        ``ParallelConfig.ENABLED`` is ``True`` and the analysis mode is TQS
+        (geometric mode is already CPU-only and does not benefit from the pool).
 
         Args:
             initial_segments: The starting list of segment dictionaries.
@@ -290,6 +497,13 @@ class BuildingOptimizer:
                 - output_values (List[List[float]]): List of corresponding output vectors
                                                      [steel, concrete] or [0.0, concrete].
         """
+        use_parallel = (
+            getattr(ParallelConfig, "ENABLED", False)
+            and not self.use_geometric_estimate  # TQS mode only
+        )
+        if use_parallel:
+            return self._collect_training_data_parallel(initial_segments)
+
         print(f"\n--- Starting Data Collection ({self.analysis_mode} Mode) ---")
         feature_vectors = []
         output_values = []

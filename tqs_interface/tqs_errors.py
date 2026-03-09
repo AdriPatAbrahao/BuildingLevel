@@ -47,19 +47,29 @@ class TQSErrorReader:
     def _dlls_available(self) -> bool:
         return self._ngererro is not None and self._nmsgerro is not None
 
-    def get_critical_errors(self) -> List[ErrorData]:
+    def get_critical_errors(
+        self, building_name: str = None
+    ) -> List[ErrorData]:
         """
         Collect critical errors (classification==2) from three project folders.
+
+        Parameters
+        ----------
+        building_name : str, optional
+            Building slot to inspect.  Defaults to ``BuildingConfig.NAME``.
+            Pass an explicit name when reading errors for a worker slot
+            (e.g. ``"OptimBuilding_02"``).
 
         Returns
         -------
         List[ErrorData]
             Unique elements with critical errors across VIGAS, PILAR, ESPACIAL.
         """
+        _name = building_name if building_name else BuildingConfig.NAME
         targets = [
-            os.path.join(str(TQS_OUTPUT_DIR), BuildingConfig.NAME, "Tipo", "VIGAS"),
-            os.path.join(str(TQS_OUTPUT_DIR), BuildingConfig.NAME, "PILAR"),
-            os.path.join(str(TQS_OUTPUT_DIR), BuildingConfig.NAME, "ESPACIAL"),
+            os.path.join(str(TQS_OUTPUT_DIR), _name, "Tipo", "VIGAS"),
+            os.path.join(str(TQS_OUTPUT_DIR), _name, "PILAR"),
+            os.path.join(str(TQS_OUTPUT_DIR), _name, "ESPACIAL"),
         ]
 
         collected: List[Tuple[int, str]] = []

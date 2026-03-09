@@ -58,6 +58,29 @@ class NeuralNetConfig:
     LR_SCHEDULER_PATIENCE = 10
     LR_SCHEDULER_FACTOR = 0.5
 
+class ParallelConfig:
+    """
+    Controls the parallel TQS data-generation pool.
+
+    Set ``ENABLED = True`` to run multiple TQS instances in parallel during
+    training-data collection.  Each worker gets its own isolated building
+    directory (``{BASE_NAME}_01``, ``_02``, …) so no file-level locking is
+    ever needed.
+
+    Tuning guidelines
+    -----------------
+    * ``NUM_WORKERS``: start at 2 and raise by 1 until CPU/RAM saturate.
+      Each worker uses ~1 GB RAM and one TQS licence seat.
+    * ``BASE_NAME``: slots are ``{BASE_NAME}_01``, ``_02``, … — the ``_NN``
+      suffix keeps them distinct from ``BuildingConfig.NAME`` (no suffix).
+    * ``TIMEOUT_SEC``: increase for very large buildings or slow machines.
+    """
+    ENABLED     = True           # set True to activate parallel collection
+    NUM_WORKERS = 2              # number of parallel TQS slots
+    BASE_NAME   = "OptimizedBuilding"  # slot prefix → OptimizedBuilding_01, _02 …
+    TIMEOUT_SEC = 180            # per-job RESDES.HTM wait timeout (seconds)
+
+
 class ObjectiveConfig:
     """Parameters used by the optimization objective function."""
     CONCRETE_PRICE_M3 = 10.0
