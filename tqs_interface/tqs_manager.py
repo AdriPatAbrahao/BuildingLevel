@@ -1,9 +1,11 @@
 from config.constants import DEFAULT_BEAM_DEAD_LOAD_TF_M, DEFAULT_BEAM_HEIGHT_CM, DEFAULT_BEAM_LIVE_LOAD_TF_M, DEFAULT_BEAM_WIDTH_CM
 from config.settings import BuildingConfig
+from config.paths import PROJECT_ROOT, TQS_OUTPUT_DIR
 from typing import Optional, List, Dict, Tuple
 from shapely.geometry import Polygon
 from .tqs_model import TQSElementFactory
 from .tqs_build import AddBuilding
+from utils.file_handler import cleanup_building_files
 import traceback
 from TQS import TQSUtil, TQSModel
 
@@ -194,14 +196,22 @@ class TQSModelManager:
             bool: True if the entire process was successful, False otherwise.
         """
         TQSUtil.writef(f"\n--- TQSModelManager: Starting Full Building Model Creation for '{self.building_name}' ---")
-        
+
         try:
             # --- 1. Close any existing model instance in this manager ---
             if self.model:
                 TQSUtil.writef("Manager: Closing previous model instance...")
                 self.model.file.Close() # Ensure it's properly closed
                 self.model = None
-                
+
+            # --- 1b. Clean leftover TQS files from previous runs ---
+            TQSUtil.writef("Manager: Cleaning leftover TQS files...")
+            cleanup_building_files(
+                building_name=self.building_name,
+                tqs_base_dir=TQS_OUTPUT_DIR,
+                dat_dir=PROJECT_ROOT,
+            )
+
             # --- 2. Create/Setup TQS Building Project ---
             TQSUtil.writef(f"Manager: Setting up TQS Building project '{self.building_name}'...")
             tqs_building_project = AddBuilding(self.building_name) # From tqs_build.py
