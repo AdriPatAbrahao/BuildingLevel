@@ -70,12 +70,25 @@ class GeneticOptimizer:
         pop[0] = np.clip(init, self.lower, self.upper)
         return pop
 
-    def _evaluate(self, pop: np.ndarray) -> np.ndarray:
-        """Evaluate the objective for each individual sequentially."""
+    def _evaluate(self, pop: np.ndarray) -> tuple[np.ndarray, list]:
+        """Evaluate the objective for each individual sequentially.
+
+        Returns
+        -------
+        costs : np.ndarray
+            Cost for each individual.
+        metrics_cache : list[dict | None]
+            Metrics dict cached from the last ``compute_metrics`` call inside
+            ``calculate_cost``, indexed by individual position.  Avoids a
+            second evaluation of the best individual when logging generation
+            statistics.
+        """
         costs = np.empty(pop.shape[0], dtype=float)
+        metrics_cache: list = [None] * pop.shape[0]
         for i, x in enumerate(pop):
             costs[i] = self.objective_func.calculate_cost(x)
-        return costs
+            metrics_cache[i] = self.objective_func._last_metrics
+        return costs, metrics_cache
 
     def _tournament_select(self, pop: np.ndarray, costs: np.ndarray) -> np.ndarray:
         """Pick the best individual among `k` random candidates."""
@@ -120,7 +133,7 @@ class GeneticOptimizer:
         print("\n--- Iniciando Otimização Genética ---")
 
         pop = self._init_population()
-        costs = self._evaluate(pop)
+        costs, _ = self._evaluate(pop)
 
         best_idx = int(np.argmin(costs))
         best_x = pop[best_idx].copy()
@@ -150,13 +163,15 @@ class GeneticOptimizer:
                     new_pop.append(c2)
 
             pop = np.vstack(new_pop)
-            costs = self._evaluate(pop)
+            costs, metrics_cache = self._evaluate(pop)
 
             # Atualiza melhor
             gen_best_idx = int(np.argmin(costs))
             gen_best_cost = float(costs[gen_best_idx])
             gen_best_x = pop[gen_best_idx].copy()
-            gen_metrics = self.objective_func.compute_metrics(gen_best_x)
+            # Reuse cached metrics — avoids a second full evaluation of the best
+            # individual (was previously calling compute_metrics again here).
+            gen_metrics = metrics_cache[gen_best_idx] or self.objective_func.compute_metrics(gen_best_x)
 
             improved = gen_best_cost + 1e-8 < best_cost
             if improved:

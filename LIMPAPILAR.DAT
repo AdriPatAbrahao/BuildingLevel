@@ -1,0 +1,51 @@
+*.IBK,S,0,0,Arquivos de trabalho do TQS Pilar
+*.SBK,S,0,0,Arquivos de trabalho do TQS Pilar
+PORTIC*.*,S,0,0,Arquivos de trabalho do TQS Pilar
+????0*.PIL,S,0,0,Arquivos de trabalho do TQS Pilar
+*.MRC,S,0,0,Arquivos de trabalho do TQS Pilar
+*.PIS,S,0,0,Arquivos de trabalho do TQS Pilar
+PRJ-????.CAL,S,0,0,Arquivos de trabalho do TQS Pilar
+*.CMM,S,0,0,Arquivos de trabalho do TQS Pilar
+*.NFV,S,0,0,Arquivos de trabalho do TQS Pilar
+*.PRJ,S,0,0,Arquivos de trabalho do TQS Pilar
+*.SUB,S,0,0,Definicao de subprojeto
+*.SUI,S,0,0,Criterios de subprojeto
+*.TAM,S,0,0,Arquivos de trabalho do TQS Pilar
+*.PIL,S,0,0,Arquivos de trabalho do TQS Pilar
+*.PIT,S,0,0,Arquivos de trabalho do TQS Pilar
+*.CTL,S,0,0,Arquivos de trabalho do TQS Pilar
+*.DDD,S,0,0,Arquivos de trabalho do TQS Pilar
+*.DIM,S,0,0,Arquivos de trabalho do TQS Pilar
+*.IND,S,0,0,Arquivos de trabalho do TQS Pilar
+*.RSL,S,0,0,Arquivos de trabalho do TQS Pilar
+SUB-????.*,S,0,0,Arquivos de trabalho do TQS Pilar
+PRJ-$$$$.CVP,S,0,0,Arquivos de trabalho do TQS Pilar
+PRJ-$$$$.CVR,S,0,0,Arquivos de trabalho do TQS Pilar
+*.TED,I,0,0,Leitura dos esforcos do portico
+*.TEX,I,0,0,Leitura dos esforcos do portico
+$$$$????.DPX,S,0,0,Arquivos para edicao grafica de pilares
+$$$$????.DPY,S,0,0,Arquivos para edicao grafica de pilares
+$$$$????.TID,S,0,0,Arquivos auxiliares de desenho
+????0*.SEC,S,0,0,Arquivos de trabalho do TQS Pilar
+PORTC.BAT,I,0,0,Arquivos temporarios
+CNTRLE.ARQ,I,0,0,Arquivos temporarios
+*.ERR,S,0,0,Arquivos temporarios de erro
+*.RST,S,0,0,Arquivo de trabalho do P2ORD
+ERROS.*,S,0,0,Erros e avisos de processamento
+*.TEP,N,0,0,Esforcos de portico espacial
+PLRE????.DWG,I,0,0,Antigas tabelas de lances independentes
+$$$$P???.DWG,S,8,2,Locacao de pilares no piso
+$$$$????.DWG,N,8,1,Desenhos de armacao de pilares
+$$$$????.DWG,N,8,4,Pilares que simulam cortinas
+$$$$????.DWG,N,8,5,Desenhos de armacao de pilares
+$$$$????.DWG,N,8,6,Pilares que simulam cortinas
+*.2OR,S,0,0,Arquivos de trabalho - 2a ordem
+*.1OR,S,0,0,Arquivos de trabalho - 2a ordem
+*.COP,S,0,0,Arquivos de trabalho - 2a ordem
+*.POL,S,0,0,Arquivos de trabalho - 2a ordem
+NUMPIL.DAT,N,0,0,Arquivos de trabalho do TQS Pilar
+NOMPIL.DAT,N,0,0,Arquivos de trabalho do TQS Pilar
+ARRANQUE.DAT,S,0,0,Arquivos de trabalho do TQS Pilar
+PNUCRIG.DAT,N,0,0,Arquivo de dados dos pilares parede discretizados
+INERPIL.DAT,N,0,0,Geometrias para calculo do fator K(ACI/CIRSOC)
+KFACTOR.DAT,N,0,0,Dados do fator K(ACI/CIRSOC)

@@ -210,29 +210,32 @@ class GeometryProcessor:
     @staticmethod
     def find_connected_components(graph: Dict[int, Set[int]]) -> List[List[int]]:
         """
-        Finds connected components in a graph using Depth-First Search (DFS).
+        Finds connected components in a graph using iterative DFS.
+
+        The iterative approach avoids Python's recursion depth limit, which
+        can be hit on large graphs where all nodes form a single chain.
         """
         visited: Set[int] = set()
         components: List[List[int]] = []
-        
-        # Consider todos os nós que são chaves ou aparecem em conjuntos de adjacência
+
         all_nodes_in_graph = set(graph.keys())
         for neighbors in graph.values():
             all_nodes_in_graph.update(neighbors)
 
-        def dfs(node: int, current_component: List[int]):
-            visited.add(node)
-            current_component.append(node)
-            # graph.get(node, set()) para lidar com nós que podem não ter entrada de chave no grafo
-            # mas são mencionados como vizinhos (embora um grafo bem formado deva ter chaves para todos os nós)
-            for neighbor in graph.get(node, set()):
-                if neighbor not in visited:
-                    dfs(neighbor, current_component)
-
-        for node in sorted(list(all_nodes_in_graph)): # Ordenar para resultados consistentes (opcional)
-            if node not in visited:
-                component: List[int] = []
-                dfs(node, component)
-                if component: # Adiciona apenas se o componente não for vazio
-                    components.append(component)
+        for start in sorted(all_nodes_in_graph):
+            if start in visited:
+                continue
+            component: List[int] = []
+            stack = [start]
+            while stack:
+                node = stack.pop()
+                if node in visited:
+                    continue
+                visited.add(node)
+                component.append(node)
+                for neighbor in graph.get(node, set()):
+                    if neighbor not in visited:
+                        stack.append(neighbor)
+            if component:
+                components.append(component)
         return components

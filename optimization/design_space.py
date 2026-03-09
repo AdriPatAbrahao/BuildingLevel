@@ -29,12 +29,12 @@ class DesignSpace:
 
         # Extrai grupos de simetria (opcional)
         if 'group_id' in self.seed_df.columns:
-            gids = []
-            for i, v in enumerate(self.seed_df['group_id']):
-                if pd.isna(v) or (isinstance(v, str) and v.strip() == ''):
-                    gids.append(f"__solo_{i}")
-                else:
-                    gids.append(str(v))
+            raw = self.seed_df['group_id'].to_numpy(dtype=object)
+            gids = [
+                f"__solo_{i}" if (pd.isna(v) or (isinstance(v, str) and v.strip() == ''))
+                else str(v)
+                for i, v in enumerate(raw)
+            ]
             self.seed_df['group_id'] = gids
         else:
             self.seed_df['group_id'] = [f"__solo_{i}" for i in range(len(self.seed_df))]
@@ -55,6 +55,20 @@ class DesignSpace:
                 self.upper_bounds[i] = self.lower_bounds[i]
         # Chute inicial por grupo: usar lower_bounds (garantidamente viável)
         self.initial_guess = self.lower_bounds.copy()
+
+        # Pre-cache numpy arrays for fast vectorized geometry reconstruction.
+        # Avoids full DataFrame.copy() in the hot path (called thousands of times
+        # during optimization).
+        self._x          = self.seed_df['x'].to_numpy(dtype=float)
+        self._y          = self.seed_df['y'].to_numpy(dtype=float)
+        self._dx         = self.seed_df['dx'].to_numpy(dtype=float)
+        self._dy         = self.seed_df['dy'].to_numpy(dtype=float)
+        self._base_lengths  = self.seed_df['length'].to_numpy(dtype=float)
+        self._maxlengths    = self.seed_df['maxlength'].to_numpy(dtype=float)
+        self._group_id_vals = self.seed_df['group_id'].to_numpy(dtype=object)
+        # Static DataFrame: columns that never change (no length/end_x/end_y).
+        _drop = [c for c in ('length', 'end_x', 'end_y') if c in self.seed_df.columns]
+        self._static_df = self.seed_df.drop(columns=_drop) if _drop else self.seed_df
 
         print(f"   - Espaço de busca definido com {self.num_variables} variáveis.")
         print(f"   - Limites inferiores (min=length inicial): {self.lower_bounds}")
@@ -94,17 +108,55 @@ class DesignSpace:
         if len(vector) != self.num_variables:
             raise ValueError(f"Vetor de entrada tem {len(vector)} elementos, mas o esperado era {self.num_variables}.")
 
-        new_df = self.seed_df.copy()
-        # Aplica drivers por grupo
+        # Build lengths array with numpy (avoids pandas .loc indexing per group).
+        lengths = self._base_lengths.copy()
         for i, idxs in enumerate(self.group_indices):
-            val = float(vector[i])
-            new_df.loc[idxs, 'length'] = val
+            lengths[idxs] = float(vector[i])
 
-        new_df['end_x'] = new_df['x'] + new_df['dx'] * new_df['length']
-        new_df['end_y'] = new_df['y'] + new_df['dy'] * new_df['length']
-        
-
+        # Copy only static columns; assign computed columns as numpy arrays.
+        new_df = self._static_df.copy()
+        new_df['length'] = lengths
+        new_df['end_x']  = self._x + self._dx * lengths
+        new_df['end_y']  = self._y + self._dy * lengths
 
         return new_df
-        
-        
+
+    def segments_from_vector(self, vector: np.ndarray) -> list:
+        """
+        Create the list of segment dicts directly from a length vector — no
+        DataFrame allocation and no CSV serialisation/parsing.
+
+        This is the fast path used during optimisation.  Equivalent to calling
+        ``create_geometry_from_vector`` + ``LengthProcessor.read_length_from_csv``
+        but avoids all I/O overhead.
+
+        Returns
+        -------
+        list[dict]
+            Each dict has ``start``, ``end``, ``length``, ``maxlength``,
+            ``binary`` and ``group_id`` keys, matching the format produced by
+            ``LengthProcessor.read_length_from_csv``.
+        """
+        if len(vector) != self.num_variables:
+            raise ValueError(f"Vetor de entrada tem {len(vector)} elementos, mas o esperado era {self.num_variables}.")
+
+        lengths = self._base_lengths.copy()
+        for i, idxs in enumerate(self.group_indices):
+            lengths[idxs] = float(vector[i])
+
+        end_x = self._x + self._dx * lengths
+        end_y = self._y + self._dy * lengths
+
+        segments = []
+        for i in range(len(self._x)):
+            gid = self._group_id_vals[i]
+            segments.append({
+                'start':     (float(self._x[i]),   float(self._y[i])),
+                'end':       (float(end_x[i]),      float(end_y[i])),
+                'length':    float(lengths[i]),
+                'maxlength': float(self._maxlengths[i]),
+                'binary':    1,
+                'group_id':  str(gid),
+            })
+        return segments
+

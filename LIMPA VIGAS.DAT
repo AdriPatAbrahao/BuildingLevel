@@ -1,0 +1,43 @@
+*.MAR,I,0,0,Arquivos de versao antiga
+*.IN4,S,0,0,Processamento de vigas
+*.ESF,S,0,0,Processamento de vigas
+*.APO,S,0,0,Processamento de vigas
+*.ANE,S,0,0,Processamento de vigas
+*.ACI,S,0,0,Processamento de vigas
+*.TAM,S,0,0,Processamento de vigas
+*.ESP,S,0,0,Processamento de vigas
+*.PRV,S,0,0,Processamento de vigas
+*.ESE,S,0,0,Processamento de vigas
+*.PRJ,S,0,0,Processamento de vigas
+*.SUB,S,0,0,Descricao de um subprojeto
+$$$$????.GEO,S,0,0,Informacao alfanumerica de desenho
+PRJ-$$$$.DAT,S,0,0,Dados de vigas apos consistencia
+*.TEE,S,0,0,Arquivo de trabalho com esforcos de grelha
+*.TEI,S,0,0,Arquivo de trabalho com esforcos de grelha
+*.IND,S,0,0,Processamento de vigas
+*.IN2,S,0,0,Processamento de vigas
+*.IN3,S,0,0,Processamento de vigas
+*.TEV,N,0,0,Esforcos de grelha transferidos do TQS Formas
+*.TEA,N,0,0,Esforcos de portico transferidos do TQS Formas
+$$$$????.DWG,N,7,1,Arquivos de desenho de vigas
+$$$$????.DWG,N,7,3,Arquivos de desenho de vigas
+$$$$????.DWG,N,7,4,Arquivos de desenho de vigas
+$$$$????.DWG,N,7,5,Arquivos de desenho de vigas
+????A_*.DWG,N,0,0,Arquivos de desenho de arranques
+ERROS.*,S,0,0,Erros e avisos de processamento
+FAIXESTR.DAT,S,0,0,Temporário na flexão composta normal
+VFUROS.DAT,S,0,0,Temporário no cálculo de furos
+VFUROS.DET,S,0,0,Temporário no cálculo de furos
+DIAGRAMAS_VIGA????.DWG,N,0,0,Desenho de diagramas
+*.DAN,S,0,0,Diagramas de AsNec x AsExist
+????_VPRO.XML,S,0,0,Arquivo de interface com VPROTQS
+*.VPR,S,0,0,Arquivo de interface com VPROTQS
+*.FPC,S,0,0,Processamento de vigas
+VTASNEEX.DAT,S,0,0,Temporário no cálculo de cortante
+VVVVDIME.DAT,S,0,0,Temporário no cálculo de cortante
+MNASNEEX.DAT,S,0,0,Temporário no cálculo de flexão negativa
+MNEGDIME.DAT,S,0,0,Temporário no cálculo de flexão negativa
+MPASNEEX.DAT,S,0,0,Temporário no cálculo de flexão positiva
+MPOSDIME.DAT,S,0,0,Temporário no cálculo de flexão positiva
+ARMADNEG.DAT,S,0,0,Temporário no cálculo de armaduras necessárias
+ASAPOPOS.DAT,S,0,0,Temporário no cálculo de armaduras necessárias

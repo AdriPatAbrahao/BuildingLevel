@@ -309,6 +309,53 @@ class BuildingInference:
             # Propaga erro para impedir uso inconsistente
             raise
     
+    def predict_from_segments(self, segments: list) -> tuple[float, float, float | None]:
+        """
+        Predict steel/concrete directly from a pre-built segment list.
+
+        Skips CSV serialisation and parsing entirely — use this in the
+        optimisation hot-loop instead of ``predict_from_csv``.
+
+        Parameters
+        ----------
+        segments : list[dict]
+            Segment dicts as produced by ``DesignSpace.segments_from_vector`` or
+            ``LengthProcessor.read_length_from_csv``.
+
+        Returns
+        -------
+        tuple[float, float, float | None]
+            ``(steel_pred, concrete_geom, prob_invalid)``
+        """
+        if not segments:
+            raise ValueError("Lista de segmentos vazia.")
+
+        column_polygons, beam_definitions = self.input_processor.process_segments(segments)
+        feature_engineer = FeatureEngineer(column_polygons, beam_definitions)
+        feature_vector = feature_engineer.extract_features()
+
+        expected_n = getattr(self.feature_pipeline.scaler_X, 'n_features_in_', None)
+        if expected_n is not None and len(feature_vector) != expected_n:
+            if len(feature_vector) > expected_n:
+                feature_vector = feature_vector[:expected_n]
+            else:
+                raise RuntimeError(
+                    f"Tamanho de features ({len(feature_vector)}) menor que o esperado pelo scaler ({expected_n})."
+                )
+
+        concreto_geom = get_geometric_concrete_volume(column_polygons, beam_definitions)
+        feature_vector_scaled = self.feature_pipeline.transform_features([feature_vector])
+        prediction_scaled = self.nn_manager.predict(feature_vector_scaled)
+        prediction_final = self.feature_pipeline.inverse_transform_outputs(prediction_scaled)
+
+        if prediction_final.ndim == 2 and prediction_final.shape[1] >= 1:
+            aco_predito = float(prediction_final[0][0])
+        else:
+            raise RuntimeError("Predição inválida: modelo não retornou pelo menos 1 saída para aço.")
+
+        prob_invalid = self._predict_validity_probability(feature_vector)
+        return aco_predito, float(concreto_geom), prob_invalid
+
     def predict_from_csv(self, csv_path_or_buffer) -> tuple[float, float, float | None]:
         """
         Predict steel from CSV/buffer and compute geometric concrete volume.

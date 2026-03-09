@@ -38,7 +38,10 @@ class ObjectiveFunction:
 
         self.design_space = design_space
         self.inference_runner = inference_runner
-        
+        # Cache for the last compute_metrics call so that calculate_cost callers
+        # can retrieve metrics without a second evaluation of the same vector.
+        self._last_metrics: dict | None = None
+
         print("--- Função Objetivo pronta ---")
         print(f"   - Preço Concreto: R$ {self.PRECO_CONCRETO_M3:.2f}/m³")
         print(f"   - Preço Aço:      R$ {self.PRECO_ACO_KGF:.2f}/kg")
@@ -91,24 +94,35 @@ class ObjectiveFunction:
         >>> cost = obj.calculate_cost(x)
         """
         try:
-            metrics = self.compute_metrics(vector)
-            return float(metrics["cost"])
+            self._last_metrics = self.compute_metrics(vector)
+            return float(self._last_metrics["cost"])
         except Exception as e:
             print("\n--- ERRO DENTRO DA FUNÇÃO OBJETIVO ---")
             print(f"Erro ao avaliar o vetor (contínuo): {vector}")
             print(f"Tipo de Erro: {type(e).__name__}")
             print(f"Mensagem: {e}")
             print(traceback.format_exc())
+            self._last_metrics = None
             return float('inf')
 
     def compute_metrics(self, vector: np.ndarray) -> dict:
         try:
             discretized_vector = self._discretize_vector(vector)
-            geometry_df = self.design_space.create_geometry_from_vector(discretized_vector)
-            csv_buffer = io.StringIO()
-            geometry_df.to_csv(csv_buffer, index=False, sep=';', decimal=',')
-            csv_buffer.seek(0)
-            steel, concrete, prob_invalid = self.inference_runner.predict_from_csv(csv_buffer)
+
+            # Fast path: bypass DataFrame creation and CSV round-trip entirely.
+            # Falls back to CSV path if DesignSpace or inference don't support the
+            # direct segment interface (e.g. when called from external code).
+            if hasattr(self.design_space, 'segments_from_vector') and \
+               hasattr(self.inference_runner, 'predict_from_segments'):
+                segments = self.design_space.segments_from_vector(discretized_vector)
+                steel, concrete, prob_invalid = self.inference_runner.predict_from_segments(segments)
+            else:
+                geometry_df = self.design_space.create_geometry_from_vector(discretized_vector)
+                csv_buffer = io.StringIO()
+                geometry_df.to_csv(csv_buffer, index=False, sep=';', decimal=',')
+                csv_buffer.seek(0)
+                steel, concrete, prob_invalid = self.inference_runner.predict_from_csv(csv_buffer)
+
             cost = (steel * self.PRECO_ACO_KGF) + (concrete * self.PRECO_CONCRETO_M3)
             thr = getattr(self.inference_runner, 'invalid_threshold', None) or self.INVALID_PROB_THRESHOLD
             if prob_invalid is not None and prob_invalid >= thr:
