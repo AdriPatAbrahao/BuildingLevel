@@ -23,18 +23,25 @@ class FeatureEngineer:
         """
         features = []
         
-        # Column features
-        column_areas = [p.area for p in self.column_polygons]
-        total_column_area = sum(column_areas)
+        # Column features — single numpy pass (avoids 5 separate iterations).
+        col_areas = np.array([p.area for p in self.column_polygons], dtype=float)
         num_columns = len(self.column_polygons)
-        
+        if col_areas.size > 0:
+            total_column_area = float(col_areas.sum())
+            mean_col_area     = float(col_areas.mean())
+            std_col_area      = float(col_areas.std())
+            min_col_area      = float(col_areas.min())
+            max_col_area      = float(col_areas.max())
+        else:
+            total_column_area = mean_col_area = std_col_area = min_col_area = max_col_area = 0.0
+
         features.extend([
             total_column_area,
             num_columns,
-            np.mean(column_areas) if column_areas else 0,
-            np.std(column_areas) if column_areas else 0,
-            min(column_areas) if column_areas else 0,
-            max(column_areas) if column_areas else 0,
+            mean_col_area,
+            std_col_area,
+            min_col_area,
+            max_col_area,
         ])
         
         # Beam features (effective after subtracting column intersections)
@@ -138,78 +145,81 @@ class FeatureEngineer:
             KDTree = None
             DBSCAN = None
 
-        centroids = []
-        areas = []
-        perimeters = []
-        for p in self.column_polygons:
-            c = p.centroid
-            centroids.append((float(c.x), float(c.y)))
-            areas.append(float(p.area))
-            perimeters.append(float(p.length))
+        # Build centroid/area/perimeter arrays once; reused throughout.
+        if self.column_polygons:
+            _cg = [p.centroid for p in self.column_polygons]
+            centroids_np = np.array([(float(c.x), float(c.y)) for c in _cg], dtype=float)
+            areas_np     = col_areas          # already computed above
+            perims_np    = np.array([p.length for p in self.column_polygons], dtype=float)
+        else:
+            centroids_np = np.empty((0, 2), dtype=float)
+            areas_np     = col_areas
+            perims_np    = np.empty(0, dtype=float)
+
+        # Keep list-of-tuples alias so downstream zip() calls are unchanged.
+        centroids = list(map(tuple, centroids_np)) if centroids_np.size else []
 
         if centroids:
-            cx = float(np.mean([c[0] for c in centroids]))
-            cy = float(np.mean([c[1] for c in centroids]))
-            dists = np.sqrt((np.array([c[0] for c in centroids]) - cx)**2 + (np.array([c[1] for c in centroids]) - cy)**2)
+            cx = float(centroids_np[:, 0].mean())
+            cy = float(centroids_np[:, 1].mean())
+            dists = np.sqrt((centroids_np[:, 0] - cx)**2 + (centroids_np[:, 1] - cy)**2)
             mean_dist = float(np.mean(dists))
             median_dist = float(np.median(dists))
             max_dist = float(np.max(dists))
-            excentricity_global = float(np.sum(np.array(areas) * dists)) if areas else 0.0
+            excentricity_global = float(np.sum(areas_np * dists))
 
-            q_counts = [0, 0, 0, 0]
-            q_areas = [0.0, 0.0, 0.0, 0.0]
-            for (x, y), a in zip(centroids, areas or [0.0]*len(centroids)):
-                qi = 0
-                if x >= cx and y >= cy:
-                    qi = 0
-                elif x < cx and y >= cy:
-                    qi = 1
-                elif x < cx and y < cy:
-                    qi = 2
-                else:
-                    qi = 3
-                q_counts[qi] += 1
-                q_areas[qi] += a
+            # Quadrant analysis — vectorised
+            xc = centroids_np[:, 0]
+            yc = centroids_np[:, 1]
+            q_idx = np.where(xc >= cx,
+                             np.where(yc >= cy, 0, 3),
+                             np.where(yc >= cy, 1, 2))
+            q_counts = [int(np.sum(q_idx == q)) for q in range(4)]
+            q_areas  = [float(np.sum(areas_np[q_idx == q])) for q in range(4)]
             total_count = float(len(centroids))
-            total_area = float(np.sum(areas)) if areas else 0.0
+            total_area  = float(areas_np.sum())
             max_q_count_ratio = float(max(q_counts)) / total_count if total_count > 0 else 0.0
-            max_q_area_ratio = float(max(q_areas)) / total_area if total_area > 0 else 0.0
+            max_q_area_ratio  = float(max(q_areas))  / total_area  if total_area  > 0 else 0.0
 
-            slenderness_vals = []
-            for A, P in zip(areas or [], perimeters or []):
-                if A > 0:
-                    slenderness_vals.append(float(P / np.sqrt(A)))
-            mean_slenderness = float(np.mean(slenderness_vals)) if slenderness_vals else 0.0
-            p95_slenderness = float(np.percentile(slenderness_vals, 95)) if slenderness_vals else 0.0
+            # Slenderness — vectorised
+            valid_mask = areas_np > 0
+            if valid_mask.any():
+                slend = perims_np[valid_mask] / np.sqrt(areas_np[valid_mask])
+                mean_slenderness = float(slend.mean())
+                p95_slenderness  = float(np.percentile(slend, 95))
+            else:
+                mean_slenderness = p95_slenderness = 0.0
 
+            # KDTree — built once and reused for both neighbour distances and DBSCAN eps.
             k_neighbors = 4
-            kd_mean = 0.0
-            kd_std = 0.0
-            kd_ratio_min_max = 0.0
+            kd_mean = kd_std = kd_ratio_min_max = 0.0
+            _kd = None  # shared KDTree instance
             if KDTree is not None and len(centroids) > k_neighbors:
-                arr = np.array(centroids)
-                kd = KDTree(arr)
-                d, _ = kd.query(arr, k=k_neighbors+1)
+                _kd = KDTree(centroids_np)
+                d, _ = _kd.query(centroids_np, k=k_neighbors + 1)
                 dn = d[:, 1:]
                 avg_neighbor = np.mean(dn, axis=1)
-                kd_mean = float(np.mean(avg_neighbor))
-                kd_std = float(np.std(avg_neighbor))
+                kd_mean = float(avg_neighbor.mean())
+                kd_std  = float(avg_neighbor.std())
                 if avg_neighbor.size > 0:
-                    kd_ratio_min_max = float(np.min(avg_neighbor) / (np.max(avg_neighbor) + 1e-9))
+                    kd_ratio_min_max = float(avg_neighbor.min() / (avg_neighbor.max() + 1e-9))
 
             n_clusters = 0
             largest_cluster_size = 0
             proportion_in_clusters = 0.0
             if DBSCAN is not None and len(centroids) >= 5:
-                arr = np.array(centroids)
-                if KDTree is not None:
-                    kd = KDTree(arr)
-                    dnn, _ = kd.query(arr, k=2)
+                # Reuse existing KDTree for eps estimation (no second build).
+                if _kd is not None:
+                    dnn, _ = _kd.query(centroids_np, k=2)
+                    median_nn = float(np.median(dnn[:, 1]))
+                elif KDTree is not None:
+                    _kd2 = KDTree(centroids_np)
+                    dnn, _ = _kd2.query(centroids_np, k=2)
                     median_nn = float(np.median(dnn[:, 1]))
                 else:
                     median_nn = float(np.median(dists))
                 eps = max(median_nn * 0.5, 1e-6)
-                labels = DBSCAN(eps=eps, min_samples=3).fit(arr).labels_
+                labels = DBSCAN(eps=eps, min_samples=3).fit(centroids_np).labels_
                 valid = labels >= 0
                 unique_labels = [l for l in set(labels) if l >= 0]
                 n_clusters = int(len(unique_labels))

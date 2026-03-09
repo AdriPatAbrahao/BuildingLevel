@@ -63,6 +63,7 @@ from results.resultsext import extract_material_summary # Extracts data from TQS
 from tqs_interface.tqs_errors import TQSErrorReader
 from visualization.segment_plotter import SegmentPlotter # Plots individual configurations
 from visualization.results_plotter import ResultsPlotter # Plots NN performance graphs
+from visualization.nn_diagnostics import run_full_diagnostics
 
 # Utilities - Helper functions
 # Ensure 'utils' directory exists and contains these files
@@ -873,6 +874,25 @@ class BuildingOptimizer:
                 "num_test_samples": len(actuals_final),
                 "final_metrics": final_metrics
             })
+            try:
+                _lc = locals()
+                _clf_diag = _lc.get('clf')
+                _yc_test  = _lc.get('yc_test')
+                _Xc_test  = _lc.get('Xc_test')
+                run_full_diagnostics(
+                    experiment_dir=self.exp_manager.run_dir,
+                    feature_names=feature_names,
+                    nn_manager=self.nn_manager,
+                    X_test=X_test_scaled,
+                    y_test_steel=actuals_np[:, 0],
+                    y_pred_steel=predictions_np[:, 0],
+                    feature_pipeline=self.feature_pipeline,
+                    classifier=_clf_diag,
+                    y_test_valid=_yc_test,
+                    X_test_clf=_Xc_test,
+                )
+            except Exception as _diag_exc:
+                print(f"[NNDiagnostics] Skipped due to error: {_diag_exc}")
             try:
                 print("Sugestão: execute tuning offline com 'python tuning/tune_model.py' para otimizar hiperparâmetros.")
             except Exception:
