@@ -1,4 +1,0 @@
-Config index: 0
-TQS v?lido: True
-Volume concreto TQS (m3): 15.08
-Volume concreto geom?trico (m3): 9.064
