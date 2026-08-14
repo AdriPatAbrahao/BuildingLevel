@@ -9,8 +9,8 @@ def extract_material_summary(file_path):
         file_path (str): The full path to the RESDES.HTM file.
 
     Returns:
-        dict: A dictionary containing the extracted values for steel and concrete.
-              Returns None if the table or row is not found.
+        tuple[str, str]: A tuple (steel_value, concrete_value) with the extracted text values.
+                         Returns None if the table or row is not found.
     """
     # Check if the file exists
     if not os.path.exists(file_path):
@@ -71,6 +71,5 @@ def extract_material_summary(file_path):
         print("Error: The table structure does not match the expected format.")
         return None
 
-    # Return the values as a dictionary
     return steel_value, concrete_value
     

@@ -19,7 +19,7 @@ from tqs_interface.tqs_manager import TQSModelManager
 from tqs_interface.tqs_exec import RunModel
 from results.resultsext import extract_material_summary
 from utils.feature_pipeline import FeaturePipeline
-from utils.geometric_calculator import get_geometric_concrete_volume
+from utils.geometric_calculator import get_geometric_concrete_volume, calculate_column_formwork_area
 from joblib import load
             
 # --- CONFIGURAÇÃO DA INFERÊNCIA ---
@@ -27,7 +27,7 @@ from joblib import load
 # Ex: "20250830-180000_Treino_com_200_amostras_e_BN"
 ##EXPERIMENT_ID = "20250901-234401_Treino_com_200_amostras_e_BN"
 # Default experiment ID used when no environment override is provided
-_DEFAULT_EXPERIMENT_ID = "20251117-180524_Treino_com_600_amostras"
+_DEFAULT_EXPERIMENT_ID = "20260407-190546_Treino_com_1500_amostras"
 # Allow overriding via environment variable for operational flexibility
 EXPERIMENT_ID = os.getenv("BUILDOPT_EXPERIMENT_ID", _DEFAULT_EXPERIMENT_ID)
 
@@ -51,7 +51,9 @@ class BuildingInference:
         self.invalid_threshold = None
         try:
             print("--- Inicializando o Orquestrador de Inferência ---")
-            eid = experiment_id or EXPERIMENT_ID
+            # Resolve experiment directory — instance-level, never relies on module globals
+            # so that multiple BuildingInference instances in the same session don't clash.
+            eid = experiment_id or os.getenv("BUILDOPT_EXPERIMENT_ID") or _DEFAULT_EXPERIMENT_ID
             exp_dir = paths.EXPERIMENTS_DIR / eid
             if not exp_dir.exists():
                 base = paths.EXPERIMENTS_DIR
@@ -65,24 +67,26 @@ class BuildingInference:
                     raise FileNotFoundError(f"Diretório do experimento não encontrado: '{exp_dir}'")
                 print(f"Info: EXPERIMENT_ID '{eid}' não encontrado. Usando o mais recente '{latest.name}'.")
                 exp_dir = latest
-            globals()['EXPERIMENT_DIR'] = exp_dir
-            globals()['EXPERIMENT_ID'] = exp_dir.name
-            globals()['PIPELINE_PATH'] = exp_dir / "feature_pipeline.pkl"
-            globals()['MODEL_PATH'] = exp_dir / "trained_model.pth"
-            globals()['CONFIG_SNAPSHOT_PATH'] = exp_dir / "config_snapshot.json"
-            
+
+            # Store paths as instance attributes — all methods use self.exp_dir etc.
+            self.exp_dir = exp_dir
+            self.experiment_id = exp_dir.name
+            self._pipeline_path = exp_dir / "feature_pipeline.pkl"
+            self._model_path = exp_dir / "trained_model.pth"
+            self._config_snapshot_path = exp_dir / "config_snapshot.json"
+
             # Carrega a pipeline e o modelo
-            print(f"Carregando artefatos do experimento: '{EXPERIMENT_ID}'")
+            print(f"Carregando artefatos do experimento: '{self.experiment_id}'")
             self.feature_pipeline = FeaturePipeline()
-            self.feature_pipeline.load(PIPELINE_PATH) # Carrega os scalers
-        
+            self.feature_pipeline.load(self._pipeline_path)
+
             self.nn_manager = NeuralNetworkManager()
 
             self.input_processor = self.feature_pipeline.input_processor
-            if not self.nn_manager.load_model(MODEL_PATH):
+            if not self.nn_manager.load_model(self._model_path):
                 raise RuntimeError("Falha ao carregar o modelo treinado.")
 
-            classifier_path = EXPERIMENT_DIR / "validity_classifier.pkl"
+            classifier_path = self.exp_dir / "validity_classifier.pkl"
             if classifier_path.exists():
                 try:
                     self.validity_classifier = load(classifier_path)
@@ -95,7 +99,7 @@ class BuildingInference:
             else:
                 print(f"Info: Validity classifier not found at '{classifier_path}'.")
 
-            thr_path = EXPERIMENT_DIR / "metrics" / "validity_threshold.json"
+            thr_path = self.exp_dir / "metrics" / "validity_threshold.json"
             if thr_path.exists():
                 try:
                     with open(thr_path, 'r', encoding='utf-8') as f:
@@ -111,7 +115,7 @@ class BuildingInference:
             self._calibrate_invalid_threshold_from_roc()
 
         except FileNotFoundError as e:
-            raise FileNotFoundError(f"Erro: Artefato não encontrado! Verifique se o ID do experimento ('{EXPERIMENT_ID}') está correto e se os arquivos existem. Detalhe: {e}")
+            raise FileNotFoundError(f"Erro: Artefato não encontrado! Verifique se o ID do experimento ('{eid}') está correto e se os arquivos existem. Detalhe: {e}")
         except Exception as e:
             print(f"ERRO CRÍTICO na inicialização: {e}")
             raise e
@@ -164,8 +168,8 @@ class BuildingInference:
 
     def _calibrate_invalid_threshold_from_roc(self):
         try:
-            roc_path = EXPERIMENT_DIR / "metrics" / "roc_curve.json"
-            thr_path = EXPERIMENT_DIR / "metrics" / "validity_threshold.json"
+            roc_path = self.exp_dir / "metrics" / "roc_curve.json"
+            thr_path = self.exp_dir / "metrics" / "validity_threshold.json"
             if thr_path.exists():
                 return
             if not roc_path.exists():
@@ -205,11 +209,11 @@ class BuildingInference:
             If hard incompatibilities are detected between model/scaler/features.
         """
         try:
-            if not CONFIG_SNAPSHOT_PATH.exists():
-                print(f"AVISO: Snapshot de configuração não encontrado em '{CONFIG_SNAPSHOT_PATH}'.")
+            if not self._config_snapshot_path.exists():
+                print(f"AVISO: Snapshot de configuração não encontrado em '{self._config_snapshot_path}'.")
                 return
 
-            with open(CONFIG_SNAPSHOT_PATH, 'r', encoding='utf-8') as f:
+            with open(self._config_snapshot_path, 'r', encoding='utf-8') as f:
                 snap = json.load(f)
 
             # Imports locais para evitar dependências cíclicas na carga
@@ -309,9 +313,9 @@ class BuildingInference:
             # Propaga erro para impedir uso inconsistente
             raise
     
-    def predict_from_segments(self, segments: list) -> tuple[float, float, float | None]:
+    def predict_from_segments(self, segments: list) -> tuple[float, float, float, float | None]:
         """
-        Predict steel/concrete directly from a pre-built segment list.
+        Predict steel/concrete/formwork directly from a pre-built segment list.
 
         Skips CSV serialisation and parsing entirely — use this in the
         optimisation hot-loop instead of ``predict_from_csv``.
@@ -324,8 +328,8 @@ class BuildingInference:
 
         Returns
         -------
-        tuple[float, float, float | None]
-            ``(steel_pred, concrete_geom, prob_invalid)``
+        tuple[float, float, float, float | None]
+            ``(steel_pred, concrete_geom, formwork_area_m2, prob_invalid)``
         """
         if not segments:
             raise ValueError("Lista de segmentos vazia.")
@@ -337,6 +341,12 @@ class BuildingInference:
         expected_n = getattr(self.feature_pipeline.scaler_X, 'n_features_in_', None)
         if expected_n is not None and len(feature_vector) != expected_n:
             if len(feature_vector) > expected_n:
+                import warnings
+                warnings.warn(
+                    f"FeatureEngineer returned {len(feature_vector)} features but scaler expects {expected_n}. "
+                    f"Truncating — retrain the model if FeatureEngineer was intentionally updated.",
+                    UserWarning, stacklevel=2
+                )
                 feature_vector = feature_vector[:expected_n]
             else:
                 raise RuntimeError(
@@ -344,6 +354,7 @@ class BuildingInference:
                 )
 
         concreto_geom = get_geometric_concrete_volume(column_polygons, beam_definitions)
+        formwork_area = calculate_column_formwork_area(column_polygons)
         feature_vector_scaled = self.feature_pipeline.transform_features([feature_vector])
         prediction_scaled = self.nn_manager.predict(feature_vector_scaled)
         prediction_final = self.feature_pipeline.inverse_transform_outputs(prediction_scaled)
@@ -354,11 +365,11 @@ class BuildingInference:
             raise RuntimeError("Predição inválida: modelo não retornou pelo menos 1 saída para aço.")
 
         prob_invalid = self._predict_validity_probability(feature_vector)
-        return aco_predito, float(concreto_geom), prob_invalid
+        return aco_predito, float(concreto_geom), float(formwork_area), prob_invalid
 
-    def predict_from_csv(self, csv_path_or_buffer) -> tuple[float, float, float | None]:
+    def predict_from_csv(self, csv_path_or_buffer) -> tuple[float, float, float, float | None]:
         """
-        Predict steel from CSV/buffer and compute geometric concrete volume.
+        Predict steel from CSV/buffer and compute geometric concrete/formwork quantities.
 
         Parameters
         ----------
@@ -367,8 +378,8 @@ class BuildingInference:
 
         Returns
         -------
-        tuple[float, float, float | None]
-            `(steel_pred, concrete_geom, prob_invalid)`; probability may be `None`.
+        tuple[float, float, float, float | None]
+            `(steel_pred, concrete_geom, formwork_area_m2, prob_invalid)`; probability may be `None`.
         """
         # 1. Lê os segmentos do CSV/buffer usando o método já existente
         self.input_processor.csv_path = csv_path_or_buffer
@@ -380,17 +391,23 @@ class BuildingInference:
         column_polygons, beam_definitions = self.input_processor.process_segments(segments)
         feature_engineer = FeatureEngineer(column_polygons, beam_definitions)
         feature_vector = feature_engineer.extract_features()
-        # Ajuste compatível: se adicionamos novas features mas o scaler espera menos, faz slice
         expected_n = getattr(self.feature_pipeline.scaler_X, 'n_features_in_', None)
         if expected_n is not None and len(feature_vector) != expected_n:
             if len(feature_vector) > expected_n:
+                import warnings
+                warnings.warn(
+                    f"FeatureEngineer returned {len(feature_vector)} features but scaler expects {expected_n}. "
+                    f"Truncating — retrain the model if FeatureEngineer was intentionally updated.",
+                    UserWarning, stacklevel=2
+                )
                 feature_vector = feature_vector[:expected_n]
             else:
                 raise RuntimeError(f"Tamanho de features ({len(feature_vector)}) menor que o esperado pelo scaler ({expected_n}).")
 
-        # 2b. Concreto geométrico exato a partir da geometria
+        # 2b. Concreto e área de forma geométricos exatos a partir da geometria
         concreto_geom = get_geometric_concrete_volume(column_polygons, beam_definitions)
-        
+        formwork_area = calculate_column_formwork_area(column_polygons)
+
         # 3. Predição do AÇO com o modelo surrogate (suporta OUTPUT_SIZE 1 ou 2)
         feature_vector_scaled = self.feature_pipeline.transform_features([feature_vector])
         prediction_scaled = self.nn_manager.predict(feature_vector_scaled)
@@ -405,7 +422,7 @@ class BuildingInference:
 
         prob_invalid = self._predict_validity_probability(feature_vector)
 
-        return aco_predito, float(concreto_geom), prob_invalid
+        return aco_predito, float(concreto_geom), float(formwork_area), prob_invalid
 
     def run_comparison(self):
         """
@@ -448,6 +465,12 @@ class BuildingInference:
             expected_n = getattr(self.feature_pipeline.scaler_X, 'n_features_in_', None)
             if expected_n is not None and len(feature_vector) != expected_n:
                 if len(feature_vector) > expected_n:
+                    import warnings
+                    warnings.warn(
+                        f"FeatureEngineer returned {len(feature_vector)} features but scaler expects {expected_n}. "
+                        f"Truncating — retrain the model if FeatureEngineer was intentionally updated.",
+                        UserWarning, stacklevel=2
+                    )
                     feature_vector = feature_vector[:expected_n]
                 else:
                     raise RuntimeError(
@@ -534,7 +557,7 @@ class BuildingInference:
         RunModel(BuildingConfig.NAME)
         
         tqs_output_file = BuildingConfig.TQS_RESULTS_FILE
-        timeout = int(getattr(BuildingConfig, 'TQS_TIMEOUT_SEC', 120)) if hasattr(BuildingConfig, 'TQS_TIMEOUT_SEC') else 120
+        timeout = int(getattr(BuildingConfig, 'TQS_TIMEOUT_SEC', 120))
         start_wait_time  = time.time()
         while not tqs_output_file.exists():
             if time.time() - start_wait_time  > timeout:
@@ -576,8 +599,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     inf = BuildingInference(args.exp)
     if args.predict:
-        steel_pred, conc_geom, prob = inf.predict_from_csv(args.csv)
-        print(f"Surrogate: steel={steel_pred:.2f} kgf, concrete_geom={conc_geom:.3f} m³, prob_invalid={prob}")
+        steel_pred, conc_geom, form_area, prob = inf.predict_from_csv(args.csv)
+        print(f"Surrogate: steel={steel_pred:.2f} kgf, concrete_geom={conc_geom:.3f} m³, form_area={form_area:.2f} m², prob_invalid={prob}")
     aco_real, concreto_real = inf.run_tqs_on_csv(args.csv)
     print(f"TQS: steel={aco_real:.2f} kgf, concrete={concreto_real:.3f} m³")
     print("-" * 75)

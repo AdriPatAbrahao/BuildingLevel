@@ -17,7 +17,6 @@ Date: March 2025
 """
 # Standard library imports
 import copy
-from random import random
 import random as py_random
 import traceback
 import time # Added for potential delays and timing
@@ -25,9 +24,8 @@ from typing import List, Tuple, Optional, Dict
 import numpy as np
 from shapely.geometry import Polygon
 from sklearn.metrics import r2_score, mean_absolute_error # Added for evaluation metrics
-# import numpy as np # Uncomment if needed for advanced splitting or direct normalization here
 
-# Third-party importspy
+# Third-party imports
 from TQS import TQSUtil
 import torch # TQS Utility functions
 import threading
@@ -39,7 +37,7 @@ import os
 
 # Project-specific imports
 # Configuration - Make sure these files exist and are configured
-from config.settings import BuildingConfig, RunConfig, NeuralNetConfig, ParallelConfig # General settings, NN config, analysis mode flag
+from config.settings import BuildingConfig, RunConfig, NeuralNetConfig, ParallelConfig, ObjectiveConfig # General settings, NN config, analysis mode flag
 from config.paths import FINAL_VECTORS_CSV_PATH # Path for saving final vectors CSV
 
 # Algorithm components - Core logic for processing and ML
@@ -53,7 +51,7 @@ from data.genBinary import generate_new_binary_vector # For binary input variati
 # Ensure 'tqsapi' is the correct package name in your structure
 from tqs_interface.tqs_manager import TQSModelManager # Manages TQS model creation/saving
 from tqs_interface.tqs_exec import RunModel # Executes TQS analysis jobs
-from tqs_interface.tqs_worker_pool import TQSWorkerPool  # Parallel TQS execution pool
+from tqs_interface.tqs_worker_pool import TQSWorkerPool, _run_model_with_timeout  # Parallel TQS execution pool
 
 # Neural Network interaction - Encapsulates NN training/prediction
 # Ensure 'tqsapi' or 'models' is the correct path for nn_manager
@@ -339,7 +337,7 @@ class BuildingOptimizer:
                     )
                 processed_valid += 1
         print(
-            f"Seed → steel={steel:.1f} kgf  concrete={concrete:.4f} m³  "
+            f"Seed -> steel={steel:.1f} kgf  concrete={concrete:.4f} m3  "
             f"valid={is_valid_s}"
         )
 
@@ -385,10 +383,12 @@ class BuildingOptimizer:
                 return None
 
         # ── Start the pool and fill the sliding window ────────────────────────
+        validity_check_dll = bool(getattr(ParallelConfig, "VALIDITY_CHECK_DLL", False))
         with TQSWorkerPool(
             num_workers=num_workers,
             base_name=base_name,
             timeout_sec=timeout_sec,
+            validity_check_dll=validity_check_dll,
         ) as pool:
             # Prime: one job per worker slot
             primed = 0
@@ -397,17 +397,24 @@ class BuildingOptimizer:
                     primed += 1
 
             # Sliding-window loop: collect → replenish → repeat
+            max_consec_timeouts = int(getattr(ParallelConfig, "MAX_CONSECUTIVE_TIMEOUTS", 3))
+            consec_timeouts = 0
             while in_flight and processed_valid < self.num_target_samples:
                 self._heartbeat_ts = time.time()
 
                 try:
                     res = pool.get_result(timeout=float(timeout_sec) + 30)
+                    consec_timeouts = 0  # reset on any successful result
                 except Exception as wait_err:
+                    consec_timeouts += 1
                     print(
-                        f"[Parallel] Timeout waiting for result: {wait_err}. "
-                        "Stopping collection."
+                        f"[Parallel] Timeout waiting for result ({consec_timeouts}/"
+                        f"{max_consec_timeouts}): {wait_err}."
                     )
-                    break
+                    if consec_timeouts >= max_consec_timeouts:
+                        print("[Parallel] Too many consecutive timeouts. Stopping collection.")
+                        break
+                    continue
 
                 entry = in_flight.pop(res.job_id, None)
                 if entry is None:
@@ -416,15 +423,25 @@ class BuildingOptimizer:
 
                 print(
                     f"\n[Parallel] Job #{res.job_id} from [{res.slot_name}] "
-                    f"in {res.elapsed:.1f}s — success={res.success}"
+                    f"in {res.elapsed:.1f}s - success={res.success}"
                 )
 
                 if res.success:
                     fv = self._extract_feature_vector(col_polys, beam_defs)
                     if fv:
+                        # Determine validity: DLL check (when enabled) OR output bounds.
+                        _steel_min = getattr(ObjectiveConfig, "STEEL_MIN_KGF", None)
+                        _steel_max = getattr(ObjectiveConfig, "STEEL_MAX_KGF", None)
+                        _conc_min  = getattr(ObjectiveConfig, "CONCRETE_MIN_M3", None)
+                        _out_of_bounds = (
+                            (_steel_min is not None and res.steel < _steel_min) or
+                            (_steel_max is not None and res.steel > _steel_max) or
+                            (_conc_min  is not None and res.concrete < _conc_min)
+                        )
+                        is_valid_sample = res.is_valid and not _out_of_bounds
                         self._clf_features.append(fv)
-                        self._clf_labels.append(1 if res.is_valid else 0)
-                        if res.is_valid:
+                        self._clf_labels.append(1 if is_valid_sample else 0)
+                        if is_valid_sample:
                             feature_vectors.append(fv)
                             output_values.append([res.steel])
                             if self.use_vector_input:
@@ -432,18 +449,32 @@ class BuildingOptimizer:
                                     _copy.deepcopy(new_segs)
                                 )
                             processed_valid += 1
+                            if processed_valid % 100 == 0:
+                                try:
+                                    self.segment_plotter.plot_segments(
+                                        new_segs, current_iter,
+                                        steel=res.steel, concrete=res.concrete,
+                                    )
+                                except Exception as _pe:
+                                    print(f"[Parallel] Segment plot skipped: {_pe}")
                             print(
-                                f"  ✔ steel={res.steel:.1f} kgf  "
-                                f"concrete={res.concrete:.4f} m³  "
+                                f"  [OK] steel={res.steel:.1f} kgf  "
+                                f"concrete={res.concrete:.4f} m3  "
                                 f"valid_count={processed_valid}/"
                                 f"{self.num_target_samples}"
                             )
+                        else:
+                            reason = "DLL check" if not res.is_valid else "output bounds"
+                            print(
+                                f"  [INVALID] job #{res.job_id} rejected by {reason} "
+                                f"(steel={res.steel:.1f} kgf  concrete={res.concrete:.4f} m3)."
+                            )
                     else:
                         print(
-                            f"  ⚠ Feature extraction failed for job #{res.job_id}."
+                            f"  [WARN] Feature extraction failed for job #{res.job_id}."
                         )
                 else:
-                    print(f"  ✘ Job failed: {res.error}")
+                    print(f"  [FAILED] Job #{res.job_id}: {res.error}")
 
                 # Checkpoint
                 if getattr(RunConfig, "CHECKPOINTS_ENABLED", True):
@@ -765,11 +796,12 @@ class BuildingOptimizer:
         from sklearn.model_selection import train_test_split
         print("\n[Step 1/5] Splitting data and fitting pipeline...")
         t_split_start = time.time()
+        _seed = getattr(RunConfig, 'SEED', 42)
         X_train_val, X_test, y_train_val, y_test = train_test_split(
-            feature_vectors, output_values, test_size=getattr(NeuralNetConfig, "TEST_SPLIT_RATIO", 0.15), random_state=42
+            feature_vectors, output_values, test_size=getattr(NeuralNetConfig, "TEST_SPLIT_RATIO", 0.15), random_state=_seed
         )
         X_train, X_val, y_train, y_val = train_test_split(
-            X_train_val, y_train_val, test_size=getattr(NeuralNetConfig, "VALIDATION_SPLIT_RATIO", 0.2), random_state=42
+            X_train_val, y_train_val, test_size=getattr(NeuralNetConfig, "VALIDATION_SPLIT_RATIO", 0.2), random_state=_seed
         )
         t_split_end = time.time()
         self.feature_pipeline.fit(X_train, y_train)
@@ -781,6 +813,29 @@ class BuildingOptimizer:
         X_test_scaled = self.feature_pipeline.transform_features(X_test)
         y_test_scaled = self.feature_pipeline.transform_outputs(y_test)
         t_scale_end = time.time()
+
+        # ── Save raw + scaled arrays for post-training analysis ───────────────
+        # Enables running nn_diagnostics.py standalone later without retraining.
+        try:
+            np.savez_compressed(
+                self.exp_manager.run_dir / "arrays.npz",
+                X_train=np.array(X_train, dtype=np.float32),
+                X_val=np.array(X_val, dtype=np.float32),
+                X_test=np.array(X_test, dtype=np.float32),
+                y_train=np.array(y_train, dtype=np.float32),
+                y_val=np.array(y_val, dtype=np.float32),
+                y_test=np.array(y_test, dtype=np.float32),
+                X_train_scaled=X_train_scaled,
+                X_val_scaled=X_val_scaled,
+                X_test_scaled=X_test_scaled,
+                y_train_scaled=y_train_scaled,
+                y_val_scaled=y_val_scaled,
+                y_test_scaled=y_test_scaled,
+            )
+            print(f"[Arrays] Saved arrays.npz ({len(X_train)} train / {len(X_val)} val / {len(X_test)} test)")
+        except Exception as _e_arr:
+            print(f"[Arrays] Failed to save arrays.npz: {_e_arr}")
+
         try:
             h = hashlib.sha256()
             h.update(np.array(feature_vectors, dtype=np.float32).tobytes())
@@ -795,8 +850,12 @@ class BuildingOptimizer:
         # Salva a pipeline TREINADA usando o caminho do ExperimentManager
         self.feature_pipeline.save(self.exp_manager.get_pipeline_path())
         try:
+            feature_names = FeatureEngineer.feature_names()
+        except Exception:
+            feature_names = []
+        try:
             with open(self.exp_manager.get_metrics_dir() / "feature_names.json", "w", encoding="utf-8") as f:
-                json.dump({"feature_names": FeatureEngineer.feature_names()}, f)
+                json.dump({"feature_names": feature_names}, f)
         except Exception:
             pass
 
@@ -811,89 +870,184 @@ class BuildingOptimizer:
         self.nn_manager.save_model(self.exp_manager.get_model_path())
 
         # 2b. Treinar classificador de validade e salvar métricas
+        #
+        # Split em 3 vias (train/val/test) em vez de train/test simples:
+        #   - train (60%): ajusta os pesos da regressão logística.
+        #   - val   (20%): calibra o limiar de decisão (Youden) — a ÚNICA finalidade
+        #                  desse subconjunto é escolher o ponto de corte da curva ROC.
+        #   - test  (20%): nunca é usado em nenhuma decisão de calibração; reporta
+        #                  o desempenho esperado da regra já calibrada
+        #                  (prob_invalid >= threshold), tal como ela é usada de
+        #                  fato na função objetivo. Isso evita reportar métricas
+        #                  "de teste" otimistas por terem sido calculadas no mesmo
+        #                  conjunto usado para escolher o limiar.
+        t_train_clf_start = t_train_clf_end = None
         try:
             from sklearn.linear_model import LogisticRegression
             from sklearn.pipeline import make_pipeline
             from sklearn.preprocessing import StandardScaler
             from sklearn.metrics import accuracy_score, roc_auc_score, precision_recall_fscore_support, confusion_matrix, roc_curve
+            from sklearn.model_selection import train_test_split
             import joblib, json
             if len(self._clf_features) > 0 and len(self._clf_labels) > 0:
-                print("\n[Step 2b/5] Training validity classifier...")
-                clf = make_pipeline(
-                    StandardScaler(),
-                    LogisticRegression(max_iter=1000, class_weight='balanced')
-                )
-                from sklearn.model_selection import train_test_split
-                Xc_train, Xc_test, yc_train, yc_test = train_test_split(
-                    self._clf_features, self._clf_labels, test_size=0.2, stratify=self._clf_labels, random_state=42
-                )
-                t_train_clf_start = time.time()
-                clf.fit(Xc_train, yc_train)
-                t_train_clf_end = time.time()
-                joblib.dump(clf, self.exp_manager.run_dir / "validity_classifier.pkl")
-                y_train_pred = clf.predict(Xc_train)
-                train_metrics = {"accuracy": float(accuracy_score(yc_train, y_train_pred))}
-                pr, rc, f1, _ = precision_recall_fscore_support(yc_train, y_train_pred, labels=[0,1], zero_division=0)
-                train_metrics.update({
-                    "precision_by_class": {"0": float(pr[0]), "1": float(pr[1])},
-                    "recall_by_class": {"0": float(rc[0]), "1": float(rc[1])},
-                    "f1_by_class": {"0": float(f1[0]), "1": float(f1[1])},
-                    "confusion_matrix": confusion_matrix(yc_train, y_train_pred, labels=[0,1]).tolist()
-                })
-                with open(self.exp_manager.get_metrics_dir() / "classifier.json", "w", encoding="utf-8") as f:
-                    json.dump(train_metrics, f)
-                y_test_pred = clf.predict(Xc_test)
-                test_metrics = {"accuracy": float(accuracy_score(yc_test, y_test_pred))}
-                pr_t, rc_t, f1_t, _ = precision_recall_fscore_support(yc_test, y_test_pred, labels=[0,1], zero_division=0)
-                test_metrics.update({
-                    "precision_by_class": {"0": float(pr_t[0]), "1": float(pr_t[1])},
-                    "recall_by_class": {"0": float(rc_t[0]), "1": float(rc_t[1])},
-                    "f1_by_class": {"0": float(f1_t[0]), "1": float(f1_t[1])},
-                    "confusion_matrix": confusion_matrix(yc_test, y_test_pred, labels=[0,1]).tolist()
-                })
-                with open(self.exp_manager.get_metrics_dir() / "classifier_test.json", "w", encoding="utf-8") as f:
-                    json.dump(test_metrics, f)
-                try:
-                    proba_test = clf.predict_proba(Xc_test)
+                n_classes = len(set(self._clf_labels))
+                if n_classes < 2:
+                    print(
+                        f"\n[Step 2b/5] Skipping validity classifier: only {n_classes} class "
+                        f"present in labels (need at least 2). "
+                        f"Set ParallelConfig.VALIDITY_CHECK_DLL=True or define "
+                        f"ObjectiveConfig.STEEL_MIN_KGF/STEEL_MAX_KGF to generate invalid samples."
+                    )
+                else:
+                    print("\n[Step 2b/5] Training validity classifier (train/val/test split)...")
+                    _clf_seed = getattr(RunConfig, 'SEED', 42)
+
+                    # 60% train / 20% val (calibra limiar) / 20% test (reporta apenas)
+                    Xc_train, Xc_temp, yc_train, yc_temp = train_test_split(
+                        self._clf_features, self._clf_labels,
+                        test_size=0.4, stratify=self._clf_labels, random_state=_clf_seed
+                    )
+                    Xc_val, Xc_test, yc_val, yc_test = train_test_split(
+                        Xc_temp, yc_temp,
+                        test_size=0.5, stratify=yc_temp, random_state=_clf_seed
+                    )
+                    n_inv_train = sum(1 for v in yc_train if v == 0)
+                    n_inv_val = sum(1 for v in yc_val if v == 0)
+                    n_inv_test = sum(1 for v in yc_test if v == 0)
+                    print(
+                        f"   - Split: {len(Xc_train)} train / {len(Xc_val)} val / {len(Xc_test)} test "
+                        f"(inválidos: {n_inv_train}/{n_inv_val}/{n_inv_test})"
+                    )
+
+                    clf = make_pipeline(
+                        StandardScaler(),
+                        LogisticRegression(max_iter=1000, class_weight='balanced')
+                    )
+                    t_train_clf_start = time.time()
+                    clf.fit(Xc_train, yc_train)
+                    t_train_clf_end = time.time()
+                    joblib.dump(clf, self.exp_manager.run_dir / "validity_classifier.pkl")
+
                     classes = list(clf.named_steps['logisticregression'].classes_)
-                    idx_invalid = int(classes.index(0))
-                    y_inv_test = (np.array(yc_test) == 0).astype(int)
-                    roc_auc = float(roc_auc_score(y_inv_test, proba_test[:, idx_invalid]))
-                    fpr, tpr, thr = roc_curve(y_inv_test, proba_test[:, idx_invalid])
-                    roc_data = {"fpr": list(map(float, fpr)), "tpr": list(map(float, tpr)), "thresholds": list(map(float, thr)), "auc": roc_auc}
-                    with open(self.exp_manager.get_metrics_dir() / "roc_curve.json", "w", encoding="utf-8") as f:
-                        json.dump(roc_data, f)
+                    idx_invalid = int(classes.index(0)) if 0 in classes else 0
+
+                    def _clf_split_metrics(y_true, y_pred) -> dict:
+                        pr, rc, f1, _ = precision_recall_fscore_support(y_true, y_pred, labels=[0, 1], zero_division=0)
+                        return {
+                            "accuracy": float(accuracy_score(y_true, y_pred)),
+                            "precision_by_class": {"0": float(pr[0]), "1": float(pr[1])},
+                            "recall_by_class": {"0": float(rc[0]), "1": float(rc[1])},
+                            "f1_by_class": {"0": float(f1[0]), "1": float(f1[1])},
+                            "confusion_matrix": confusion_matrix(y_true, y_pred, labels=[0, 1]).tolist(),
+                        }
+
+                    # --- Diagnóstico no treino (limiar padrão 0.5 do clf.predict) ---
+                    train_metrics = _clf_split_metrics(yc_train, clf.predict(Xc_train))
+                    train_metrics.update({"split": "train", "n_samples": len(Xc_train)})
+                    with open(self.exp_manager.get_metrics_dir() / "classifier.json", "w", encoding="utf-8") as f:
+                        json.dump(train_metrics, f)
+
+                    # --- Calibração do limiar (Youden) — SOMENTE na validação ---
+                    best_thr = 0.5
                     try:
+                        proba_val = clf.predict_proba(Xc_val)
+                        y_inv_val = (np.array(yc_val) == 0).astype(int)
+                        fpr, tpr, thr = roc_curve(y_inv_val, proba_val[:, idx_invalid])
+                        roc_val_auc = float(roc_auc_score(y_inv_val, proba_val[:, idx_invalid]))
+                        roc_data = {
+                            "fpr": list(map(float, fpr)), "tpr": list(map(float, tpr)),
+                            "thresholds": list(map(float, thr)), "auc": roc_val_auc,
+                            "split": "validation", "n_samples": len(Xc_val),
+                        }
+                        with open(self.exp_manager.get_metrics_dir() / "roc_curve.json", "w", encoding="utf-8") as f:
+                            json.dump(roc_data, f)
+
                         j = tpr - fpr
                         best_idx = int(np.argmax(j))
                         best_thr = float(thr[best_idx])
                         with open(self.exp_manager.get_metrics_dir() / "validity_threshold.json", "w", encoding="utf-8") as f:
-                            json.dump({"threshold": best_thr, "method": "youden", "class_index": idx_invalid}, f)
+                            json.dump({
+                                "threshold": best_thr, "method": "youden", "class_index": idx_invalid,
+                                "split": "validation", "n_samples": len(Xc_val),
+                            }, f)
+                    except Exception as exc:
+                        print(f"Warning: threshold calibration on validation split failed, using default 0.5: {exc}")
+
+                    # --- Métricas finais no teste, aplicando o limiar já calibrado ---
+                    # O teste nunca participa da calibração: mede o desempenho real da
+                    # regra de decisão (prob_invalid >= best_thr) tal como ela é usada
+                    # na função objetivo (optimization/objective_function.py).
+                    try:
+                        proba_test = clf.predict_proba(Xc_test)
+                        y_pred_test = np.where(proba_test[:, idx_invalid] >= best_thr, 0, 1)
+                        y_inv_test = (np.array(yc_test) == 0).astype(int)
+                        test_metrics = _clf_split_metrics(yc_test, y_pred_test)
+                        test_metrics.update({
+                            "split": "test", "n_samples": len(Xc_test),
+                            "threshold_used": best_thr,
+                            "auc": float(roc_auc_score(y_inv_test, proba_test[:, idx_invalid])),
+                        })
+                        with open(self.exp_manager.get_metrics_dir() / "classifier_test.json", "w", encoding="utf-8") as f:
+                            json.dump(test_metrics, f)
+
+                        # ROC do teste é só para relato — nunca usada para calibrar nada.
+                        fpr_t, tpr_t, thr_t = roc_curve(y_inv_test, proba_test[:, idx_invalid])
+                        roc_test_data = {
+                            "fpr": list(map(float, fpr_t)), "tpr": list(map(float, tpr_t)),
+                            "thresholds": list(map(float, thr_t)), "auc": test_metrics["auc"],
+                            "split": "test", "n_samples": len(Xc_test),
+                        }
+                        with open(self.exp_manager.get_metrics_dir() / "roc_curve_test.json", "w", encoding="utf-8") as f:
+                            json.dump(roc_test_data, f)
+                    except Exception as exc:
+                        print(f"Warning: failed to compute final test metrics: {exc}")
+
+                    try:
+                        lr = clf.named_steps['logisticregression']
+                        coeffs = {
+                            "classes": list(map(int, lr.classes_.tolist())),
+                            "coef": lr.coef_.tolist(),
+                            "intercept": lr.intercept_.tolist()
+                        }
+                        with open(self.exp_manager.get_metrics_dir() / "classifier_coeffs.json", "w", encoding="utf-8") as f:
+                            json.dump(coeffs, f)
                     except Exception:
                         pass
-                except Exception:
-                    pass
-                try:
-                    lr = clf.named_steps['logisticregression']
-                    coeffs = {
-                        "classes": list(map(int, lr.classes_.tolist())),
-                        "coef": lr.coef_.tolist(),
-                        "intercept": lr.intercept_.tolist()
-                    }
-                    with open(self.exp_manager.get_metrics_dir() / "classifier_coeffs.json", "w", encoding="utf-8") as f:
-                        json.dump(coeffs, f)
-                except Exception:
-                    pass
-                print("Validity classifier trained and metrics saved (train/test/ROC).")
+                    print("Validity classifier trained: threshold calibrated on validation, metrics reported on held-out test.")
             else:
                 print("[Step 2b/5] Skipping validity classifier training (no labels).")
         except Exception as e:
             print(f"Warning: Failed to train validity classifier: {e}")
 
-        # 3. FAZER PREDIÃ‡Ã•ES NO CONJUNTO DE TESTE
+        # 2c. Feature Importance analysis (PFI sklearn + SHAP)
+        try:
+            _lc2   = locals()
+            _clf_fi   = _lc2.get('clf')
+            _yc_fi    = np.array(_lc2.get('yc_test', []))
+            _Xc_fi    = np.array(_lc2.get('Xc_test', [])) if _lc2.get('Xc_test') is not None else None
+            self.nn_manager.run_feature_importance_analysis(
+                X_val=X_val_scaled,
+                y_val_real=self.feature_pipeline.inverse_transform_outputs(y_val_scaled)[:, 0],
+                feature_names=feature_names,
+                plotter=self.results_plotter,
+                feature_pipeline=self.feature_pipeline,
+                classifier=_clf_fi,
+                X_val_clf=_Xc_fi if (_Xc_fi is not None and len(_Xc_fi) > 0) else None,
+                y_val_clf=_yc_fi if len(_yc_fi) > 0 else None,
+            )
+        except Exception as _fi_exc:
+            print(f"[FeatureImportance] Skipped due to error: {_fi_exc}")
+
+        # 3. FAZER PREDIÇÕES NO CONJUNTO DE TESTE
         if X_test_scaled.size > 0:
             print("\n[Step 3/5] Predicting on the test set...")
-            # O modelo recebe dados normalizados e retorna prediÃ§Ãµes normalizadas
+            # Benchmark de tempo de inferência do surrogate (100 passes → média por amostra)
+            _n_bench = 100
+            _t_bench_start = time.perf_counter()
+            for _ in range(_n_bench):
+                self.nn_manager.predict(X_test_scaled)
+            _t_bench_end = time.perf_counter()
+            _surrogate_ms_per_sample = ((_t_bench_end - _t_bench_start) / (_n_bench * len(X_test_scaled))) * 1000
             predictions_scaled = self.nn_manager.predict(X_test_scaled)
 
             # 4. DESNORMALIZAR OS RESULTADOS PARA AVALIAÃ‡ÃƒO
@@ -926,20 +1080,51 @@ class BuildingOptimizer:
             # Calcula mÃ©tricas para AÃ§o (coluna de Ã­ndice 0), se nÃ£o estiver em modo geomÃ©trico
             if not self.use_geometric_estimate:
                 try:
-                    r2_steel = r2_score(actuals_np[:, 0], predictions_np[:, 0])
-                    mae_steel = mean_absolute_error(actuals_np[:, 0], predictions_np[:, 0])
-                    rmse_steel = float(np.sqrt(np.mean((actuals_np[:, 0] - predictions_np[:, 0])**2)))
-                    abs_err = np.abs(actuals_np[:, 0] - predictions_np[:, 0])
+                    y_true_s  = actuals_np[:, 0]
+                    y_pred_s  = predictions_np[:, 0]
+                    abs_err   = np.abs(y_true_s - y_pred_s)
+
+                    r2_steel   = r2_score(y_true_s, y_pred_s)
+                    mae_steel  = mean_absolute_error(y_true_s, y_pred_s)
+                    rmse_steel = float(np.sqrt(np.mean((y_true_s - y_pred_s) ** 2)))
+
+                    # MAPE — ignora amostras com aço real ≈ 0 para evitar divisão instável
+                    _nonzero = y_true_s != 0
+                    mape_steel = float(np.mean(abs_err[_nonzero] / np.abs(y_true_s[_nonzero])) * 100) if _nonzero.any() else None
+
+                    # P90 do erro absoluto: 90% das predições erram menos que este valor
+                    p90_steel = float(np.percentile(abs_err, 90))
+
+                    # Bootstrap CI (95%) para R², MAE e RMSE — 1000 iterações
+                    _rng = np.random.default_rng(getattr(RunConfig, 'SEED', 42))
+                    _n   = len(y_true_s)
+                    _boot_r2, _boot_mae, _boot_rmse = [], [], []
+                    for _ in range(1000):
+                        _idx = _rng.integers(0, _n, size=_n)
+                        _yt, _yp = y_true_s[_idx], y_pred_s[_idx]
+                        _boot_r2.append(r2_score(_yt, _yp))
+                        _boot_mae.append(float(np.mean(np.abs(_yt - _yp))))
+                        _boot_rmse.append(float(np.sqrt(np.mean((_yt - _yp) ** 2))))
+                    ci_95 = {
+                        'r2':   [float(np.percentile(_boot_r2,   2.5)), float(np.percentile(_boot_r2,   97.5))],
+                        'mae':  [float(np.percentile(_boot_mae,  2.5)), float(np.percentile(_boot_mae,  97.5))],
+                        'rmse': [float(np.percentile(_boot_rmse, 2.5)), float(np.percentile(_boot_rmse, 97.5))],
+                    }
+
                     resid_stats = {
                         'mean_abs_error_kgf': float(np.mean(abs_err)),
-                        'std_abs_error_kgf': float(np.std(abs_err)),
-                        'max_abs_error_kgf': float(np.max(abs_err))
+                        'std_abs_error_kgf':  float(np.std(abs_err)),
+                        'max_abs_error_kgf':  float(np.max(abs_err)),
+                        'p90_abs_error_kgf':  p90_steel,
                     }
                     final_metrics['steel'] = {
-                        'r2_score': r2_steel,
-                        'mean_absolute_error_kgf': mae_steel,
-                        'rmse_kgf': rmse_steel,
-                        'residual_stats': resid_stats
+                        'r2_score':                  r2_steel,
+                        'mean_absolute_error_kgf':   mae_steel,
+                        'rmse_kgf':                  rmse_steel,
+                        'mape_pct':                  mape_steel,
+                        'p90_abs_error_kgf':         p90_steel,
+                        'bootstrap_ci_95':           ci_95,
+                        'residual_stats':            resid_stats,
                     }
                 except IndexError:
                     print("Aviso: NÃ£o foi possÃ­vel calcular mÃ©tricas para o aÃ§o.")
@@ -980,15 +1165,15 @@ class BuildingOptimizer:
                     "modeling": float(self._last_tqs_model_time) if self._last_tqs_model_time is not None else None,
                     "execution": float(self._last_tqs_exec_time) if self._last_tqs_exec_time is not None else None
                 },
+                "surrogate_inference_ms_per_sample": float(_surrogate_ms_per_sample),
                 "timings_detailed": {
                     "split_sec": float(t_split_end - t_split_start),
                     "scaling_sec": float(t_scale_end - t_scale_start),
                     "train_nn_sec": float(t_train_nn_end - t_train_nn_start),
-                    "train_classifier_sec": float(t_train_clf_end - t_train_clf_start)
+                    "train_classifier_sec": float(t_train_clf_end - t_train_clf_start) if (t_train_clf_end is not None and t_train_clf_start is not None) else None
                 }
             }
             try:
-                feature_names = FeatureEngineer.feature_names()
                 baseline_val_pred_scaled = self.nn_manager.predict(X_val_scaled)
                 baseline_val_pred = self.feature_pipeline.inverse_transform_outputs(baseline_val_pred_scaled)
                 baseline_val_mae = float(mean_absolute_error(
@@ -1550,7 +1735,7 @@ def main():
     #    VocÃª pode dar um nome descritivo para a execuÃ§Ã£o.
     exp_manager = ExperimentManager(
         base_dir=paths.EXPERIMENTS_DIR,
-        run_name=f"Treino_com_{getattr(RunConfig, 'NUM_SAMPLES', getattr(RunConfig, 'NUMSAMPLES', 0))}_amostras"
+        run_name=f"Treino_com_{RunConfig.NUM_SAMPLES}_amostras"
     )
 
     # (Opcional, mas recomendado) Configurar o logging para salvar no diretÃ³rio do experimento

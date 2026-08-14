@@ -7,7 +7,6 @@ from utils.geometric_calculator import (
     calculate_column_geometric_volume,
     calculate_beams_geometric_volume,
 )
-import shapely
 
 class FeatureEngineer:
     """
@@ -20,10 +19,24 @@ class FeatureEngineer:
     def extract_features(self) -> List[float]:
         """
         Computes all engineered features and returns them as a single vector.
+
+        Feature layout (43 total):
+          [0-5]   Column area stats (6)
+          [6-10]  Beam effective-length stats (5)
+          [11-15] Inertia (sum_Ix, sum_Iy, mean_Ix, mean_Iy, ratio) (5)
+          [16-17] Geometric volumes — columns, beams (2)
+          [18-21] Column perimeter / compactness (4)
+          [22-28] Spatial kept: excentricity, quadrant-area-ratio, slenderness×2, span×3 (7)
+          [29-43] NEW structural features (14):
+                  CS_x, CS_y, ecc_x, ecc_y, ecc_total (5)
+                  mean_rx, mean_ry, mean_r_min, min_r_global (4)
+                  mean_aspect, std_aspect, max_aspect (3)
+                  max_quadrant_inertia_ratio (1)
+                  J_polar_layout (1)
         """
         features = []
-        
-        # Column features — single numpy pass (avoids 5 separate iterations).
+
+        # --- Block 1: Column area features (6) ---
         col_areas = np.array([p.area for p in self.column_polygons], dtype=float)
         num_columns = len(self.column_polygons)
         if col_areas.size > 0:
@@ -36,15 +49,11 @@ class FeatureEngineer:
             total_column_area = mean_col_area = std_col_area = min_col_area = max_col_area = 0.0
 
         features.extend([
-            total_column_area,
-            num_columns,
-            mean_col_area,
-            std_col_area,
-            min_col_area,
-            max_col_area,
+            total_column_area, num_columns, mean_col_area,
+            std_col_area, min_col_area, max_col_area,
         ])
-        
-        # Beam features (effective after subtracting column intersections)
+
+        # --- Block 2: Beam effective-length features (5) ---
         beam_lines = [LineString([b['node_1'], b['node_2']]) for b in self.beam_definitions]
 
         def _intersect_len(line: LineString, poly: Polygon) -> float:
@@ -62,17 +71,14 @@ class FeatureEngineer:
 
         effective_lengths = []
         for ln in beam_lines:
-            subtract = 0.0
-            for col_poly in self.column_polygons:
-                subtract += _intersect_len(ln, col_poly)
+            subtract = sum(_intersect_len(ln, cp) for cp in self.column_polygons)
             effective_lengths.append(max(ln.length - subtract, 0.0))
 
         total_eff_beam_length = float(sum(effective_lengths))
         num_beams = len(beam_lines)
 
-        # Approximate beam volume (m^3): effective length (cm -> m) * width(m) * height(m)
         CM_TO_M = 0.01
-        beam_width_m = DEFAULT_BEAM_WIDTH_CM * CM_TO_M
+        beam_width_m  = DEFAULT_BEAM_WIDTH_CM  * CM_TO_M
         beam_height_m = DEFAULT_BEAM_HEIGHT_CM * CM_TO_M
         total_beam_volume_m3 = (total_eff_beam_length * CM_TO_M) * beam_width_m * beam_height_m
 
@@ -80,23 +86,20 @@ class FeatureEngineer:
             total_eff_beam_length,
             num_beams,
             float(np.mean(effective_lengths)) if effective_lengths else 0.0,
-            float(np.std(effective_lengths)) if effective_lengths else 0.0,
-            float(np.max(effective_lengths)) if effective_lengths else 0.0,
+            float(np.std(effective_lengths))  if effective_lengths else 0.0,
+            float(np.max(effective_lengths))  if effective_lengths else 0.0,
         ])
 
-        # Inertia features
+        # --- Block 3: Inertia features (5) ---
         moments_of_inertia_xx = []
         moments_of_inertia_yy = []
-
         for p in self.column_polygons:
-            # Substituímos a chamada hasattr pela nossa função
             try:
-                # Chama nossa nova função
                 Ixx, Iyy = calculate_centroidal_moment_of_inertia(p)
                 moments_of_inertia_xx.append(Ixx)
                 moments_of_inertia_yy.append(Iyy)
             except Exception as e:
-                print(f"Warning: Error calculating moment of inertia for a polygon: {e}. Appending 0.")
+                print(f"Warning: Error calculating moment of inertia: {e}. Appending 0.")
                 moments_of_inertia_xx.append(0.0)
                 moments_of_inertia_yy.append(0.0)
 
@@ -106,127 +109,69 @@ class FeatureEngineer:
         mean_Iy = float(np.mean(moments_of_inertia_yy)) if moments_of_inertia_yy else 0.0
         inertia_ratio = (sum_Iy / (sum_Ix + 1e-9)) if (sum_Ix > 0.0 or sum_Iy > 0.0) else 0.0
 
-        features.extend([
-            sum_Ix,
-            sum_Iy,
-            mean_Ix,
-            mean_Iy,
-            inertia_ratio,
-        ])
+        features.extend([sum_Ix, sum_Iy, mean_Ix, mean_Iy, inertia_ratio])
 
-        # Geometric concrete volumes in m^3 (separated): pillars and beams
+        # --- Block 4: Geometric volumes (2) ---
         vol_columns_m3 = calculate_column_geometric_volume(self.column_polygons)
-        # For beams prefer volume computed from effective lengths above to avoid double count
-        vol_beams_m3 = total_beam_volume_m3
-        features.extend([
-            vol_columns_m3,
-            vol_beams_m3,
-        ])
+        features.extend([vol_columns_m3, total_beam_volume_m3])
 
-        # Column perimeter/shape descriptors
+        # --- Block 5: Column perimeter / compactness (4) ---
         perims = [p.length for p in self.column_polygons]
-        compact = []
-        for p in self.column_polygons:
-            A = p.area
-            P = p.length
-            if P > 0:
-                compact.append(float(4.0 * np.pi * A / (P * P)))
+        compact = [
+            float(4.0 * np.pi * p.area / (p.length * p.length))
+            for p in self.column_polygons if p.length > 0
+        ]
         features.extend([
-            float(np.sum(perims)) if perims else 0.0,
-            float(np.mean(perims)) if perims else 0.0,
-            float(np.std(perims)) if perims else 0.0,
-            float(np.mean(compact)) if compact else 0.0,
+            float(np.sum(perims))   if perims   else 0.0,
+            float(np.mean(perims))  if perims   else 0.0,
+            float(np.std(perims))   if perims   else 0.0,
+            float(np.mean(compact)) if compact  else 0.0,
         ])
-        
-        try:
-            from sklearn.neighbors import KDTree
-            from sklearn.cluster import DBSCAN
-        except Exception:
-            KDTree = None
-            DBSCAN = None
 
-        # Build centroid/area/perimeter arrays once; reused throughout.
+        # --- Block 6: Spatial + structural features (21) ---
         if self.column_polygons:
-            _cg = [p.centroid for p in self.column_polygons]
+            _cg         = [p.centroid for p in self.column_polygons]
             centroids_np = np.array([(float(c.x), float(c.y)) for c in _cg], dtype=float)
-            areas_np     = col_areas          # already computed above
-            perims_np    = np.array([p.length for p in self.column_polygons], dtype=float)
-        else:
-            centroids_np = np.empty((0, 2), dtype=float)
             areas_np     = col_areas
-            perims_np    = np.empty(0, dtype=float)
+            perims_np    = np.array([p.length for p in self.column_polygons], dtype=float)
+            ixx_arr      = np.array(moments_of_inertia_xx, dtype=float)
+            iyy_arr      = np.array(moments_of_inertia_yy, dtype=float)
 
-        # Keep list-of-tuples alias so downstream zip() calls are unchanged.
-        centroids = list(map(tuple, centroids_np)) if centroids_np.size else []
-
-        if centroids:
-            cx = float(centroids_np[:, 0].mean())
-            cy = float(centroids_np[:, 1].mean())
+            # Area-weighted centroid (center of mass) — structurally correct reference
+            # for eccentricity and J_polar.  Simple mean would give wrong results when
+            # columns have different cross-section sizes.
+            _total_area = float(areas_np.sum())
+            if _total_area > 0:
+                cx = float(np.sum(areas_np * centroids_np[:, 0]) / _total_area)
+                cy = float(np.sum(areas_np * centroids_np[:, 1]) / _total_area)
+            else:
+                cx = float(centroids_np[:, 0].mean())
+                cy = float(centroids_np[:, 1].mean())
             dists = np.sqrt((centroids_np[:, 0] - cx)**2 + (centroids_np[:, 1] - cy)**2)
-            mean_dist = float(np.mean(dists))
-            median_dist = float(np.median(dists))
-            max_dist = float(np.max(dists))
+
+            # Kept: area-weighted eccentricity
             excentricity_global = float(np.sum(areas_np * dists))
 
-            # Quadrant analysis — vectorised
-            xc = centroids_np[:, 0]
-            yc = centroids_np[:, 1]
+            # Kept: quadrant area asymmetry
+            xc    = centroids_np[:, 0]
+            yc    = centroids_np[:, 1]
             q_idx = np.where(xc >= cx,
                              np.where(yc >= cy, 0, 3),
                              np.where(yc >= cy, 1, 2))
-            q_counts = [int(np.sum(q_idx == q)) for q in range(4)]
-            q_areas  = [float(np.sum(areas_np[q_idx == q])) for q in range(4)]
-            total_count = float(len(centroids))
-            total_area  = float(areas_np.sum())
-            max_q_count_ratio = float(max(q_counts)) / total_count if total_count > 0 else 0.0
-            max_q_area_ratio  = float(max(q_areas))  / total_area  if total_area  > 0 else 0.0
+            q_areas         = [float(np.sum(areas_np[q_idx == q])) for q in range(4)]
+            total_area      = float(areas_np.sum())
+            max_q_area_ratio = float(max(q_areas)) / total_area if total_area > 0 else 0.0
 
-            # Slenderness — vectorised
+            # Kept: geometric slenderness
             valid_mask = areas_np > 0
             if valid_mask.any():
-                slend = perims_np[valid_mask] / np.sqrt(areas_np[valid_mask])
+                slend            = perims_np[valid_mask] / np.sqrt(areas_np[valid_mask])
                 mean_slenderness = float(slend.mean())
                 p95_slenderness  = float(np.percentile(slend, 95))
             else:
                 mean_slenderness = p95_slenderness = 0.0
 
-            # KDTree — built once and reused for both neighbour distances and DBSCAN eps.
-            k_neighbors = 4
-            kd_mean = kd_std = kd_ratio_min_max = 0.0
-            _kd = None  # shared KDTree instance
-            if KDTree is not None and len(centroids) > k_neighbors:
-                _kd = KDTree(centroids_np)
-                d, _ = _kd.query(centroids_np, k=k_neighbors + 1)
-                dn = d[:, 1:]
-                avg_neighbor = np.mean(dn, axis=1)
-                kd_mean = float(avg_neighbor.mean())
-                kd_std  = float(avg_neighbor.std())
-                if avg_neighbor.size > 0:
-                    kd_ratio_min_max = float(avg_neighbor.min() / (avg_neighbor.max() + 1e-9))
-
-            n_clusters = 0
-            largest_cluster_size = 0
-            proportion_in_clusters = 0.0
-            if DBSCAN is not None and len(centroids) >= 5:
-                # Reuse existing KDTree for eps estimation (no second build).
-                if _kd is not None:
-                    dnn, _ = _kd.query(centroids_np, k=2)
-                    median_nn = float(np.median(dnn[:, 1]))
-                elif KDTree is not None:
-                    _kd2 = KDTree(centroids_np)
-                    dnn, _ = _kd2.query(centroids_np, k=2)
-                    median_nn = float(np.median(dnn[:, 1]))
-                else:
-                    median_nn = float(np.median(dists))
-                eps = max(median_nn * 0.5, 1e-6)
-                labels = DBSCAN(eps=eps, min_samples=3).fit(centroids_np).labels_
-                valid = labels >= 0
-                unique_labels = [l for l in set(labels) if l >= 0]
-                n_clusters = int(len(unique_labels))
-                counts = [int(np.sum(labels == l)) for l in unique_labels]
-                largest_cluster_size = int(max(counts)) if counts else 0
-                proportion_in_clusters = float(np.sum(valid)) / float(len(labels)) if len(labels) > 0 else 0.0
-
+            # Kept: beam span distribution
             span_max = float(np.max(effective_lengths)) if effective_lengths else 0.0
             span_p95 = float(np.percentile(effective_lengths, 95)) if effective_lengths else 0.0
             if effective_lengths:
@@ -237,71 +182,137 @@ class FeatureEngineer:
             else:
                 span_entropy = 0.0
 
+            # NEW: Center of stiffness and structural eccentricity
+            # CS_x resists lateral displacement in X → weighted by Iyy (bending about Y-axis)
+            # CS_y resists lateral displacement in Y → weighted by Ixx (bending about X-axis)
+            sum_Iyy = float(iyy_arr.sum())
+            sum_Ixx = float(ixx_arr.sum())
+            CS_x = float(np.sum(iyy_arr * centroids_np[:, 0])) / sum_Iyy if sum_Iyy > 0 else cx
+            CS_y = float(np.sum(ixx_arr * centroids_np[:, 1])) / sum_Ixx if sum_Ixx > 0 else cy
+            ecc_x     = CS_x - cx
+            ecc_y     = CS_y - cy
+            ecc_total = float(np.sqrt(ecc_x**2 + ecc_y**2))
+
+            # NEW: Radius of gyration r = sqrt(I/A) — determines structural slenderness
+            rx_list, ry_list, r_min_list = [], [], []
+            for Ixx_i, Iyy_i, A_i in zip(moments_of_inertia_xx, moments_of_inertia_yy, areas_np):
+                if A_i > 0:
+                    rx_i = float(np.sqrt(abs(Ixx_i) / A_i))
+                    ry_i = float(np.sqrt(abs(Iyy_i) / A_i))
+                    rx_list.append(rx_i)
+                    ry_list.append(ry_i)
+                    r_min_list.append(min(rx_i, ry_i))
+            mean_rx      = float(np.mean(rx_list))    if rx_list    else 0.0
+            mean_ry      = float(np.mean(ry_list))    if ry_list    else 0.0
+            mean_r_min   = float(np.mean(r_min_list)) if r_min_list else 0.0
+            min_r_global = float(np.min(r_min_list))  if r_min_list else 0.0
+
+            # NEW: Column aspect ratio h/b ≈ sqrt(Iyy/Ixx) — captures section directionality
+            aspect_list = [
+                float(np.sqrt(abs(Iyy_i) / (abs(Ixx_i) + 1e-9)))
+                for Ixx_i, Iyy_i in zip(moments_of_inertia_xx, moments_of_inertia_yy)
+            ]
+            mean_aspect = float(np.mean(aspect_list)) if aspect_list else 1.0
+            std_aspect  = float(np.std(aspect_list))  if aspect_list else 0.0
+            max_aspect  = float(np.max(aspect_list))  if aspect_list else 1.0
+
+            # NEW: Quadrant inertia asymmetry (stiffness-based, not area-based)
+            total_I_per_col           = ixx_arr + iyy_arr
+            total_I                   = float(total_I_per_col.sum())
+            q_inertia                 = [float(np.sum(total_I_per_col[q_idx == q])) for q in range(4)]
+            max_quadrant_inertia_ratio = float(max(q_inertia)) / total_I if total_I > 0 else 0.25
+
+            # NEW: Polar moment of inertia of layout — torsional stiffness proxy
+            # J = Σ(Ixx_i + Iyy_i + A_i·d_i²)  includes parallel-axis theorem term
+            J_polar = float(np.sum(ixx_arr + iyy_arr + areas_np * dists**2))
+
             features.extend([
-                mean_dist,
-                median_dist,
-                max_dist,
+                # --- kept spatial (7) ---
                 excentricity_global,
-                max_q_count_ratio,
                 max_q_area_ratio,
                 mean_slenderness,
                 p95_slenderness,
-                kd_mean,
-                kd_std,
-                kd_ratio_min_max,
-                n_clusters,
-                largest_cluster_size,
-                proportion_in_clusters,
                 span_max,
                 span_p95,
                 span_entropy,
+                # --- new: center of stiffness + eccentricity (5) ---
+                CS_x, CS_y,
+                ecc_x, ecc_y, ecc_total,
+                # --- new: radius of gyration (4) ---
+                mean_rx, mean_ry, mean_r_min, min_r_global,
+                # --- new: aspect ratio (3) ---
+                mean_aspect, std_aspect, max_aspect,
+                # --- new: stiffness asymmetry (1) ---
+                max_quadrant_inertia_ratio,
+                # --- new: torsional stiffness proxy (1) ---
+                J_polar,
             ])
 
+        assert len(features) == 43, (
+            f"Feature count mismatch: expected 43, got {len(features)}. "
+            "Update NeuralNetConfig.INPUT_SIZE and feature_names() if features were added/removed."
+        )
         return features
+
     @staticmethod
     def feature_names() -> List[str]:
         base = [
+            # Block 1 — column area stats (6)
             "columns_total_area_cm2",
             "columns_count",
             "columns_mean_area_cm2",
             "columns_std_area_cm2",
             "columns_min_area_cm2",
             "columns_max_area_cm2",
+            # Block 2 — beam effective-length stats (5)
             "beams_total_effective_length_cm",
             "beams_count",
             "beams_mean_effective_length_cm",
             "beams_std_effective_length_cm",
             "beams_max_effective_length_cm",
+            # Block 3 — inertia (5)
             "inertia_sum_Ix",
             "inertia_sum_Iy",
             "inertia_mean_Ix",
             "inertia_mean_Iy",
             "inertia_ratio_Iy_over_Ix",
+            # Block 4 — geometric volumes (2)
             "vol_columns_m3",
             "vol_beams_m3",
+            # Block 5 — perimeter / compactness (4)
             "columns_total_perimeter_cm",
             "columns_mean_perimeter_cm",
             "columns_std_perimeter_cm",
             "columns_mean_compactness",
         ]
         spatial = [
-            "pillars_mean_dist_to_center",
-            "pillars_median_dist_to_center",
-            "pillars_max_dist_to_center",
+            # Block 6a — kept spatial (7)
             "pillars_excentricity_global",
-            "pillars_max_quadrant_count_ratio",
             "pillars_max_quadrant_area_ratio",
             "pillars_mean_slenderness",
             "pillars_p95_slenderness",
-            "pillars_kd_mean_spacing",
-            "pillars_kd_std_spacing",
-            "pillars_kd_ratio_min_over_max",
-            "pillars_dbscan_num_clusters",
-            "pillars_dbscan_largest_cluster_size",
-            "pillars_dbscan_proportion_in_clusters",
             "beams_span_max_cm",
             "beams_span_p95_cm",
             "beams_span_entropy",
+            # Block 6b — center of stiffness + eccentricity (5)
+            "cs_x",
+            "cs_y",
+            "stiffness_ecc_x",
+            "stiffness_ecc_y",
+            "stiffness_ecc_total",
+            # Block 6c — radius of gyration (4)
+            "mean_radius_gyration_x",
+            "mean_radius_gyration_y",
+            "mean_radius_gyration_min",
+            "min_radius_gyration_global",
+            # Block 6d — column aspect ratio (3)
+            "mean_col_aspect_ratio",
+            "std_col_aspect_ratio",
+            "max_col_aspect_ratio",
+            # Block 6e — stiffness asymmetry (1)
+            "max_quadrant_inertia_ratio",
+            # Block 6f — torsional stiffness proxy (1)
+            "J_polar_layout",
         ]
         return base + spatial
     
