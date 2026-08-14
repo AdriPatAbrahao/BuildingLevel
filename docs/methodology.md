@@ -232,8 +232,15 @@ Source: [main.py:598–676](file:///d:/Trabalho/01_Desenvolvimento/TESTES%20IA/P
 
 A secondary **Logistic Regression** classifier (with `StandardScaler` preprocessing and `class_weight='balanced'`) is trained to predict structural validity (valid=1, invalid=0). Used during optimization to penalize likely-invalid designs.
 
-- **Optimal threshold**: Selected via **Youden's J statistic** on the ROC curve
-- **Saved metrics**: accuracy, precision/recall by class, confusion matrix, ROC-AUC
+To avoid leaking test information into the calibrated decision threshold, the labeled samples are split **three ways** (stratified, `random_state=RunConfig.SEED`):
+
+| Split | Size | Purpose |
+|-------|------|---------|
+| **train** | 60% | Fits the logistic regression weights |
+| **validation** | 20% | Computes the ROC curve and selects the operating threshold via **Youden's J statistic** (`fpr`/`tpr`/`auc` saved to `roc_curve.json`, threshold to `validity_threshold.json`) |
+| **test** | 20% | Held out from every calibration decision; reports final accuracy/precision/recall/F1/confusion matrix/AUC (`classifier_test.json`, `roc_curve_test.json`) **using the threshold already chosen on validation** — i.e. the same rule (`prob_invalid >= threshold`) actually used in the objective function |
+
+`classifier.json` (train-split metrics) uses the classifier's default 0.5 decision boundary and is a training diagnostic only, not a generalization estimate.
 
 ---
 
