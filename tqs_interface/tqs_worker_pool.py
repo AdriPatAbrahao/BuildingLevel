@@ -47,11 +47,12 @@ from __future__ import annotations
 
 import logging
 import multiprocessing as mp
+import threading as _threading
 import time
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from shapely.geometry import Polygon
 
@@ -83,6 +84,66 @@ class WorkerResult:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# TQS execution with hard timeout
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _run_model_with_timeout(
+    run_model_fn: Callable[[str], None],
+    slot_name: str,
+    timeout_sec: int,
+) -> None:
+    """
+    Run *run_model_fn(slot_name)* in a daemon thread with a hard timeout.
+
+    ``job.Execute()`` inside ``RunModel`` is a blocking DLL call with no
+    built-in timeout.  If TQS shows a modal dialog or crashes silently the
+    worker subprocess would hang forever.  This wrapper:
+
+    1. Runs ``RunModel`` in a background thread.
+    2. Waits up to *timeout_sec* seconds.
+    3. If still running, kills ``NTQSHTM.EXE`` so the DLL call unblocks.
+    4. Raises ``TimeoutError`` so the caller can return an error result
+       to the queue instead of blocking indefinitely.
+
+    Parameters
+    ----------
+    run_model_fn : callable
+        The ``RunModel`` function imported inside the worker subprocess.
+    slot_name : str
+        Building slot name passed through to ``RunModel``.
+    timeout_sec : int
+        Maximum seconds to allow before killing TQS and raising.
+    """
+    exc_holder: List[Optional[Exception]] = [None]
+
+    def _target() -> None:
+        try:
+            run_model_fn(slot_name)
+        except Exception as e:
+            exc_holder[0] = e
+
+    t = _threading.Thread(target=_target, daemon=True)
+    t.start()
+    t.join(timeout=timeout_sec)
+
+    if t.is_alive():
+        # TQS is hanging — kill the process to unblock the DLL call.
+        import subprocess as _sp2
+        _sp2.run(
+            ["taskkill", "/F", "/IM", "NTQSHTM.EXE", "/T"],
+            capture_output=True,
+        )
+        t.join(timeout=10.0)           # give the thread time to unblock
+        raise TimeoutError(
+            f"RunModel did not complete within {timeout_sec}s "
+            f"for slot '{slot_name}' — TQS process killed."
+        )
+
+    if exc_holder[0] is not None:
+        raise exc_holder[0]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Worker entry-point  (executes entirely inside a dedicated subprocess)
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -93,6 +154,7 @@ def _worker_main(
     dat_dir:  str,      # serialised as str — Path not guaranteed picklable
     tqs_base: str,
     timeout_sec: int,
+    validity_check_dll: bool = False,
 ) -> None:
     """
     Long-lived worker subprocess.
@@ -112,6 +174,15 @@ def _worker_main(
     tqs_base    : Path (as str) to the root TQS directory (``C:\\TQS``).
     timeout_sec : Maximum seconds to wait for RESDES.HTM after RunModel.
     """
+    # ── Ensure T: drive is mapped in this subprocess (subst T: C:\TQSWV26A) ──
+    import subprocess as _sp
+    _subst = _sp.run(["subst", "T:", r"C:\TQSWV26A"], capture_output=True)
+    if _subst.returncode != 0:
+        # Drive may already be mapped — query to confirm
+        _check = _sp.run(["subst"], capture_output=True, text=True)
+        if "T:\\" not in _check.stdout and "T:/" not in _check.stdout:
+            print(f"[{slot_name}] WARNING: could not map T: drive — TQS may fail.")
+
     # ── Deferred imports: TQS DLL is only initialised inside the subprocess ──
     try:
         from tqs_interface.tqs_manager import TQSModelManager
@@ -151,14 +222,14 @@ def _worker_main(
         job = job_q.get()          # blocks until a job or poison-pill arrives
 
         if job is None:
-            TQSUtil.writef(f"[{slot_name}] Shutdown signal — exiting.")
+            TQSUtil.writef(f"[{slot_name}] Shutdown signal - exiting.")
             break
 
         job_id, column_polygons, beam_definitions = job
         t0 = time.perf_counter()
 
         TQSUtil.writef(
-            f"[{slot_name}] ▶ Job #{job_id} — "
+            f"[{slot_name}] >> Job #{job_id} - "
             f"{len(column_polygons)} col(s), {len(beam_definitions)} beam(s)."
         )
 
@@ -180,7 +251,10 @@ def _worker_main(
                 )
 
             # ── 3. Execute TQS global processing for THIS slot ────────────
-            RunModel(slot_name)
+            #    Wrapped with a hard timeout: if TQS hangs (modal dialog,
+            #    silent crash), NTQSHTM.EXE is killed and TimeoutError is
+            #    raised so the worker always returns a result to the queue.
+            _run_model_with_timeout(RunModel, slot_name, timeout_sec)
             TQSUtil.writef(
                 f"[{slot_name}] RunModel issued for job #{job_id}."
             )
@@ -208,7 +282,7 @@ def _worker_main(
 
             # ── 5. Optional structural-validity check (DLL-based) ─────────
             is_valid = True
-            if error_reader._dlls_available():
+            if validity_check_dll and error_reader._dlls_available():
                 try:
                     errors = error_reader.get_critical_errors(
                         building_name=slot_name
@@ -217,16 +291,16 @@ def _worker_main(
                         is_valid = False
                         TQSUtil.writef(
                             f"[{slot_name}] Job #{job_id}: "
-                            f"{len(errors)} critical error(s) → invalid."
+                            f"{len(errors)} critical error(s) -> invalid."
                         )
                 except Exception:
                     pass  # DLL check is non-fatal
 
             elapsed = time.perf_counter() - t0
             TQSUtil.writef(
-                f"[{slot_name}] ✔ Job #{job_id} in {elapsed:.1f}s — "
-                f"aço={steel:.1f} kgf  concreto={concrete:.4f} m³  "
-                f"válido={is_valid}"
+                f"[{slot_name}] OK Job #{job_id} in {elapsed:.1f}s - "
+                f"aco={steel:.1f} kgf  concreto={concrete:.4f} m3  "
+                f"valido={is_valid}"
             )
             result_q.put(
                 WorkerResult(
@@ -240,7 +314,7 @@ def _worker_main(
             elapsed  = time.perf_counter() - t0
             err_text = f"{exc}\n{traceback.format_exc()}"
             TQSUtil.writef(
-                f"[{slot_name}] ✘ Job #{job_id} FAILED "
+                f"[{slot_name}] FAILED Job #{job_id} "
                 f"after {elapsed:.1f}s: {err_text}"
             )
             result_q.put(
@@ -288,17 +362,19 @@ class TQSWorkerPool:
 
     def __init__(
         self,
-        num_workers:  int            = 2,
-        base_name:    str            = "OptimBuilding",
-        tqs_base_dir: Optional[Path] = None,
-        dat_dir:      Optional[Path] = None,
-        timeout_sec:  int            = 180,
+        num_workers:        int            = 2,
+        base_name:          str            = "OptimBuilding",
+        tqs_base_dir:       Optional[Path] = None,
+        dat_dir:            Optional[Path] = None,
+        timeout_sec:        int            = 180,
+        validity_check_dll: bool           = False,
     ) -> None:
-        self.num_workers  = num_workers
-        self.base_name    = base_name
-        self.tqs_base_dir = Path(tqs_base_dir) if tqs_base_dir else TQS_OUTPUT_DIR
-        self.dat_dir      = Path(dat_dir)       if dat_dir      else PROJECT_ROOT
-        self.timeout_sec  = timeout_sec
+        self.num_workers        = num_workers
+        self.base_name          = base_name
+        self.tqs_base_dir       = Path(tqs_base_dir) if tqs_base_dir else TQS_OUTPUT_DIR
+        self.dat_dir            = Path(dat_dir)       if dat_dir      else PROJECT_ROOT
+        self.timeout_sec        = timeout_sec
+        self.validity_check_dll = validity_check_dll
 
         # Slot names:  OptimBuilding_01, OptimBuilding_02, …
         self.slot_names: List[str] = [
@@ -340,7 +416,7 @@ class TQSWorkerPool:
                 args=(
                     slot, jq, self._result_q,
                     str(self.dat_dir), str(self.tqs_base_dir),
-                    self.timeout_sec,
+                    self.timeout_sec, self.validity_check_dll,
                 ),
                 name=f"TQSWorker-{slot}",
                 daemon=True,

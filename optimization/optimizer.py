@@ -189,6 +189,7 @@ class GeneticOptimizer:
                 flag = "▲" if delta < 0 else ("=" if delta == 0 else "▼")
                 print(f"Comparação vs anterior: {flag} ΔR$ {abs(delta):,.2f}")
             print("Steel (kg):", f"{gen_metrics['steel']:.2f}")
+            print("Forma (m²):", f"{gen_metrics.get('form_area', 0.0):.2f}")
             print("Validade (prob_invalid):", f"{gen_metrics['prob_invalid'] if gen_metrics['prob_invalid'] is not None else 'N/A'}")
             print(f"Sem melhora consecutiva: {no_improve}")
 
@@ -197,6 +198,7 @@ class GeneticOptimizer:
                 "cost": gen_best_cost,
                 "steel": gen_metrics.get("steel"),
                 "concrete": gen_metrics.get("concrete"),
+                "form_area": gen_metrics.get("form_area"),
                 "prob_invalid": gen_metrics.get("prob_invalid"),
                 "improved": improved,
                 "no_improve": no_improve,

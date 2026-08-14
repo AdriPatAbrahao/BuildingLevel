@@ -6,7 +6,13 @@ from shapely.geometry import Polygon
 import numpy as np
 
 # Módulo que estamos testando
-from utils.geometric_calculator import get_geometric_concrete_volume, COLUMN_STORY_HEIGHT_M, BEAM_WIDTH_M, BEAM_HEIGHT_M
+from utils.geometric_calculator import (
+    get_geometric_concrete_volume,
+    calculate_column_formwork_area,
+    COLUMN_STORY_HEIGHT_M,
+    BEAM_WIDTH_M,
+    BEAM_HEIGHT_M,
+)
 
 # --- Fixtures: Dados de teste reutilizáveis ---
 
@@ -114,7 +120,29 @@ def test_calculation_with_invalid_inputs_raises_error():
     """
     with pytest.raises(ValueError, match="Entradas para .* devem ser listas."):
         get_geometric_concrete_volume(column_polygons=None, beam_definitions=[])
-    
+
     with pytest.raises(ValueError, match="Entradas para .* devem ser listas."):
         get_geometric_concrete_volume(column_polygons=[], beam_definitions=None)
+
+
+# --- Testes para calculate_column_formwork_area ---
+
+def test_formwork_area_with_columns(simple_column_polygons):
+    """
+    Testa o cálculo da área de forma (perímetro x pé-direito) dos pilares.
+    - Pilar 1: retângulo 20x50 cm -> perímetro = 2*(20+50) = 140 cm
+    - Pilar 2: retângulo 30x40 cm -> perímetro = 2*(30+40) = 140 cm
+    """
+    expected_area = (140 / 100 * COLUMN_STORY_HEIGHT_M) + (140 / 100 * COLUMN_STORY_HEIGHT_M)
+
+    total_area = calculate_column_formwork_area(simple_column_polygons)
+
+    assert np.isclose(total_area, expected_area)
+
+
+def test_formwork_area_with_no_columns():
+    """
+    Testa o caso de borda onde não há pilares. O resultado deve ser 0.
+    """
+    assert calculate_column_formwork_area([]) == 0.0
 

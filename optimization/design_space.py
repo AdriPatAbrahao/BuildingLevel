@@ -11,7 +11,7 @@ class DesignSpace:
     Lê o arquivo CSV que contém as coordenadas, vetores de direção e comprimentos
     máximos para cada variável de projeto (segmento de pilar).
     """
-    def __init__(self, seed_csv_path=paths.SEED_VECTOR_CSV_OPTMIZATION):
+    def __init__(self, seed_csv_path=paths.SEED_VECTOR_CSV_OPTIMIZATION):
         """
         Inicializa e carrega os dados do espaço de busca.
 
@@ -70,11 +70,111 @@ class DesignSpace:
         _drop = [c for c in ('length', 'end_x', 'end_y') if c in self.seed_df.columns]
         self._static_df = self.seed_df.drop(columns=_drop) if _drop else self.seed_df
 
+        # Rectangular column constraint: detect pairs of group variables that share
+        # the same physical node (x, y) but act on different axes (dx vs dy).
+        # During geometry reconstruction, only the group with the larger deviation
+        # from its initial length is applied; the other is reset to its seed value.
+        # This ensures each column node grows in at most one direction at a time,
+        # preventing T- and L-shaped cross-sections.
+        self._rect_constraints = self._detect_rect_constraints()
+        if self._rect_constraints:
+            pairs_str = ', '.join(
+                f"({self.group_keys[a]} vs {self.group_keys[b]})"
+                for a, b in self._rect_constraints
+            )
+            print(f"   - Restrição retangular ativa: {len(self._rect_constraints)} par(es) conflitante(s): {pairs_str}")
+
         print(f"   - Espaço de busca definido com {self.num_variables} variáveis.")
         print(f"   - Limites inferiores (min=length inicial): {self.lower_bounds}")
         print(f"   - Limites superiores (maxlength): {self.upper_bounds}")
         print(f"   - Chute inicial (length): {self.initial_guess}")
         print("--- Design Space pronto ---")
+
+    def _detect_rect_constraints(self) -> list:
+        """
+        Identify pairs of group variables that conflict at the same column node.
+
+        Two groups conflict when they share at least one physical node (x, y) AND
+        one group acts exclusively on the x-axis (dx != 0, dy == 0) while the
+        other acts exclusively on the y-axis (dy != 0, dx == 0).
+
+        Returns
+        -------
+        list of (int, int)
+            Each tuple holds the variable indices of a conflicting (x-group, y-group)
+            pair.  For each pair, geometry reconstruction will keep only the group
+            with the larger deviation from its initial length.
+        """
+        gkey_to_varidx = {gk: i for i, gk in enumerate(self.group_keys)}
+
+        # Classify each group as 'x', 'y', or 'mixed' based on its segment directions.
+        group_axis = {}
+        for gk, idxs in zip(self.group_keys, self.group_indices):
+            dx_vals = self._dx[list(idxs)]
+            dy_vals = self._dy[list(idxs)]
+            if np.any(dx_vals != 0) and np.all(dy_vals == 0):
+                group_axis[gk] = 'x'
+            elif np.any(dy_vals != 0) and np.all(dx_vals == 0):
+                group_axis[gk] = 'y'
+            else:
+                group_axis[gk] = 'mixed'
+
+        # Map each physical node (x, y) to the set of group keys present there.
+        node_to_groups: dict = {}
+        for gk, idxs in zip(self.group_keys, self.group_indices):
+            for row_idx in idxs:
+                node = (self._x[row_idx], self._y[row_idx])
+                node_to_groups.setdefault(node, set()).add(gk)
+
+        # Build the conflict list: x-group paired with y-group at the same node.
+        seen: set = set()
+        constraints = []
+        for node, gkeys in node_to_groups.items():
+            x_groups = [gk for gk in gkeys if group_axis.get(gk) == 'x']
+            y_groups = [gk for gk in gkeys if group_axis.get(gk) == 'y']
+            for xg in x_groups:
+                for yg in y_groups:
+                    pair = (gkey_to_varidx[xg], gkey_to_varidx[yg])
+                    canonical = tuple(sorted(pair))
+                    if canonical not in seen:
+                        seen.add(canonical)
+                        constraints.append(pair)  # (x_var_idx, y_var_idx)
+        return constraints
+
+    def _apply_rect_constraint(self, lengths: np.ndarray, vector: np.ndarray) -> np.ndarray:
+        """
+        Enforce the rectangular-section constraint on a lengths array.
+
+        For each conflicting (x_group, y_group) pair: whichever group deviates
+        less from its initial (lower-bound) length is reset to that initial value.
+        When both deviate equally (including both at initial), neither is modified.
+
+        Parameters
+        ----------
+        lengths : np.ndarray
+            Per-row length array already computed from *vector*.
+        vector : np.ndarray
+            Optimizer decision vector (one value per group variable).
+
+        Returns
+        -------
+        np.ndarray
+            Lengths array with the rectangular constraint applied (copy).
+        """
+        lengths = lengths.copy()
+        for x_vidx, y_vidx in self._rect_constraints:
+            x_dev = vector[x_vidx] - self.lower_bounds[x_vidx]
+            y_dev = vector[y_vidx] - self.lower_bounds[y_vidx]
+            if x_dev >= y_dev:
+                # x-group grows more (or tied) → reset y-group to initial seed lengths
+                for row_idx in self.group_indices[y_vidx]:
+                    lengths[row_idx] = self._base_lengths[row_idx]
+            elif y_dev > x_dev:
+                # y-group grows more → reset x-group to initial seed lengths
+                for row_idx in self.group_indices[x_vidx]:
+                    lengths[row_idx] = self._base_lengths[row_idx]
+            # if x_dev == y_dev (both at initial or tied): no change needed
+        return lengths
 
     def _validate_csv(self):
         """Verifica se o DataFrame carregado contém as colunas necessárias."""
@@ -113,6 +213,11 @@ class DesignSpace:
         for i, idxs in enumerate(self.group_indices):
             lengths[idxs] = float(vector[i])
 
+        # Enforce rectangular cross-section: at each node, only the group with
+        # the larger deviation from its seed length is allowed to change.
+        if self._rect_constraints:
+            lengths = self._apply_rect_constraint(lengths, vector)
+
         # Copy only static columns; assign computed columns as numpy arrays.
         new_df = self._static_df.copy()
         new_df['length'] = lengths
@@ -143,6 +248,10 @@ class DesignSpace:
         lengths = self._base_lengths.copy()
         for i, idxs in enumerate(self.group_indices):
             lengths[idxs] = float(vector[i])
+
+        # Enforce rectangular cross-section constraint (same as create_geometry_from_vector).
+        if self._rect_constraints:
+            lengths = self._apply_rect_constraint(lengths, vector)
 
         end_x = self._x + self._dx * lengths
         end_y = self._y + self._dy * lengths

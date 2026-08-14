@@ -64,6 +64,40 @@ def calculate_column_geometric_volume(column_polygons: List[Polygon]) -> float:
 
     return total_column_volume_m3
 
+def calculate_column_formwork_area(column_polygons: List[Polygon]) -> float:
+    """
+    Calculates the total formwork (side-form) area for a list of pillar polygons.
+
+    Area is estimated as perimeter x story height for each pillar footprint —
+    the lateral surface that requires formwork panels — the same
+    ``COLUMN_STORY_HEIGHT_M`` used for the column concrete volume, so both
+    quantities share a single source of truth for the floor height.
+
+    Args:
+        column_polygons (List[Polygon]): A list of Shapely Polygon objects
+                                         representing the base of each pillar.
+                                         The coordinates of the polygons are
+                                         assumed to be in centimeters (cm).
+
+    Returns:
+        float: The total formwork area of all pillars in square meters (m²).
+    """
+    total_formwork_area_m2 = 0.0
+
+    if not column_polygons:
+        print("  [Geometric] Warning: No column polygons provided for formwork area calculation.")
+        return 0.0
+
+    for column in column_polygons:
+        if column and isinstance(column, Polygon) and not column.is_empty:
+            perimeter_m = column.length * CM_TO_M
+            total_formwork_area_m2 += perimeter_m * COLUMN_STORY_HEIGHT_M
+        else:
+            print(f"  [Geometric] Warning: An invalid or empty pillar polygon was skipped: {column}")
+
+    return total_formwork_area_m2
+
+
 def calculate_beams_geometric_volume(beam_definitions: List[Dict]) -> float:
     """
     Calcula o volume geométrico total para uma lista de definições de vigas.

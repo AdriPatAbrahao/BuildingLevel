@@ -19,17 +19,29 @@ class TQSCriticalError(RuntimeError):
     pass
 
 
-def _cleanup_report_files():
+def _cleanup_report_files(building_name: str = None):
     """
     Remove TQS results file before a new run.
 
     Removes only the results file (`RESDES.HTM`) to avoid mixing results
     between runs. Error detection no longer relies on `PGLOERR.HTM`.
+
+    Parameters
+    ----------
+    building_name : str, optional
+        Building slot name (e.g. ``"OptimizedBuilding_01"``).  When provided
+        the RESDES.HTM path is derived from the TQS base dir + slot name so
+        that parallel workers delete their own slot's file rather than the
+        default building's file.  Defaults to ``BuildingConfig.TQS_RESULTS_FILE``.
     """
-    raw_path = getattr(BuildingConfig, "TQS_RESULTS_FILE", None)
-    if not raw_path:
-        return
-    path = Path(raw_path)
+    if building_name:
+        from config.paths import TQS_OUTPUT_DIR
+        path = Path(TQS_OUTPUT_DIR) / building_name / "ESPACIAL" / "RESDES.HTM"
+    else:
+        raw_path = getattr(BuildingConfig, "TQS_RESULTS_FILE", None)
+        if not raw_path:
+            return
+        path = Path(raw_path)
     if path.exists():
         try:
             path.unlink()
@@ -63,7 +75,7 @@ def RunModel(building_name):
         os.system('taskkill /F /IM NTQSHTM.EXE /T >nul 2>&1')
         time.sleep(0.1)
 
-    _cleanup_report_files()
+    _cleanup_report_files(building_name)
 
     job = TQSExec.Job()
     job.EnterTask(TQSExec.TaskFolder(building_name, TQSExec.TaskFolder.FOLDER_FRAMES))

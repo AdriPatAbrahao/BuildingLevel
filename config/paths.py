@@ -21,7 +21,7 @@ FINAL_VECTORS_CSV_PATH = RESULTS_DIR / "final_tqs_input_vectors.csv"
 # --- Caminhos para Arquivos de Dados de Entrada ---
 # Nomes de arquivos de semente
 SEED_VECTOR_CSV = DATA_DIR / "Building1b.csv"
-SEED_VECTOR_CSV_OPTMIZATION = DATA_DIR / "Building1c.csv"
+SEED_VECTOR_CSV_OPTIMIZATION = DATA_DIR / "Building1c.csv"
 SEED_BINARY_CSV = DATA_DIR / "Building1.csv"
 # Arquivo de teste para inferência
 INFERENCE_TEST_CSV = DATA_DIR / "BuildingTest01.csv"

@@ -31,6 +31,7 @@ class ObjectiveFunction:
         # Prefer values from ObjectiveConfig; fallback to previous defaults for backward compatibility
         self.PRECO_CONCRETO_M3 = getattr(ObjectiveConfig, "CONCRETE_PRICE_M3", 10.0)
         self.PRECO_ACO_KGF = getattr(ObjectiveConfig, "STEEL_PRICE_KG", 100.0)
+        self.PRECO_FORMA_M2 = getattr(ObjectiveConfig, "FORM_PRICE_M2", 10.0)
         self.COMPRIMENTO_PASSO = getattr(ObjectiveConfig, "LENGTH_STEP_CM", 20.0)  # PASSO DISCRETO (cm)
         self.INVALID_PROB_THRESHOLD = getattr(ObjectiveConfig, "INVALID_PROB_THRESHOLD", 0.5)
         self.INVALID_COST_PENALTY = getattr(ObjectiveConfig, "INVALID_COST_PENALTY", 1_000_000)
@@ -45,6 +46,7 @@ class ObjectiveFunction:
         print("--- Função Objetivo pronta ---")
         print(f"   - Preço Concreto: R$ {self.PRECO_CONCRETO_M3:.2f}/m³")
         print(f"   - Preço Aço:      R$ {self.PRECO_ACO_KGF:.2f}/kg")
+        print(f"   - Preço Forma:    R$ {self.PRECO_FORMA_M2:.2f}/m²")
         print(f"   - Passo Discreto de Comprimento: {self.COMPRIMENTO_PASSO} cm")
 
     def _discretize_vector(self, continuous_vector: np.ndarray) -> np.ndarray:
@@ -115,24 +117,32 @@ class ObjectiveFunction:
             if hasattr(self.design_space, 'segments_from_vector') and \
                hasattr(self.inference_runner, 'predict_from_segments'):
                 segments = self.design_space.segments_from_vector(discretized_vector)
-                steel, concrete, prob_invalid = self.inference_runner.predict_from_segments(segments)
+                steel, concrete, form_area, prob_invalid = self.inference_runner.predict_from_segments(segments)
             else:
                 geometry_df = self.design_space.create_geometry_from_vector(discretized_vector)
                 csv_buffer = io.StringIO()
                 geometry_df.to_csv(csv_buffer, index=False, sep=';', decimal=',')
                 csv_buffer.seek(0)
-                steel, concrete, prob_invalid = self.inference_runner.predict_from_csv(csv_buffer)
+                steel, concrete, form_area, prob_invalid = self.inference_runner.predict_from_csv(csv_buffer)
 
-            cost = (steel * self.PRECO_ACO_KGF) + (concrete * self.PRECO_CONCRETO_M3)
-            thr = getattr(self.inference_runner, 'invalid_threshold', None) or self.INVALID_PROB_THRESHOLD
+            cost_steel_rs = steel * self.PRECO_ACO_KGF
+            cost_concrete_rs = concrete * self.PRECO_CONCRETO_M3
+            cost_form_rs = form_area * self.PRECO_FORMA_M2
+            cost = cost_steel_rs + cost_concrete_rs + cost_form_rs
+            _raw_thr = getattr(self.inference_runner, 'invalid_threshold', None)
+            thr = _raw_thr if _raw_thr is not None else self.INVALID_PROB_THRESHOLD
             if prob_invalid is not None and prob_invalid >= thr:
                 cost += self.INVALID_COST_PENALTY
-            if steel < 0 or concrete < 0:
+            if steel < 0 or concrete < 0 or form_area < 0:
                 cost += 1_000_000
             return {
                 "vector": discretized_vector.tolist(),
                 "steel": float(steel),
                 "concrete": float(concrete),
+                "form_area": float(form_area),
+                "cost_steel_rs": float(cost_steel_rs),
+                "cost_concrete_rs": float(cost_concrete_rs),
+                "cost_form_rs": float(cost_form_rs),
                 "prob_invalid": float(prob_invalid) if prob_invalid is not None else None,
                 "cost": float(cost)
             }
