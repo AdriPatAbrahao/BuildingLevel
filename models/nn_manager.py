@@ -38,6 +38,8 @@ class NeuralNetworkManager:
 
         # Configura o dispositivo (GPU se disponível, CPU caso contrário)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self._last_grad_stats: dict | None = None  # populated during training epochs
+        self.metrics_dir: Optional[Path] = None    # set externally by caller before train()
         print(f"NeuralNetworkManager initialized. Using device: {self.device}")
 
     def train(self, X_train_scaled: np.ndarray, y_train_scaled: np.ndarray, X_val_scaled: np.ndarray, y_val_scaled: np.ndarray) -> None:
@@ -105,7 +107,8 @@ class NeuralNetworkManager:
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 patience_counter = 0
-                best_model_state = self.model.state_dict() # Save the best model state
+                import copy as _copy
+                best_model_state = _copy.deepcopy(self.model.state_dict())  # deep copy: tensors must not share storage with the live model
                 print(f"  New best validation loss: {best_val_loss:.4f}. Model state saved.")
             else:
                 patience_counter += 1
@@ -137,10 +140,8 @@ class NeuralNetworkManager:
         if self.model is None or not self.is_trained:
             raise RuntimeError("Prediction failed: Model has not been trained yet or training failed. Call train() first.")
         
-        self.model.eval() # Garante que o modelo está em modo de avaliação
-        X_tensor = torch.tensor(X_scaled, dtype=torch.float32).to(self.device)
-
         self.model.eval()
+        X_tensor = torch.tensor(X_scaled, dtype=torch.float32).to(self.device)
         with torch.no_grad():
             predictions_normalized = self.model(X_tensor).cpu().numpy()
 
@@ -203,6 +204,141 @@ class NeuralNetworkManager:
             self.is_trained = False
             return False
 
+    def run_feature_importance_analysis(
+        self,
+        X_val: np.ndarray,
+        y_val_real: np.ndarray,
+        feature_names: List[str],
+        plotter,                          # ResultsPlotter instance
+        *,
+        feature_pipeline=None,            # FeaturePipeline for inverse transform
+        classifier=None,                  # optional sklearn validity classifier
+        X_val_clf: Optional[np.ndarray] = None,
+        y_val_clf: Optional[np.ndarray] = None,
+        n_repeats: int = 15,
+        top_n: int = 25,
+        run_shap: bool = True,
+    ) -> None:
+        """
+        Compute and save Permutation Feature Importance (sklearn) and SHAP plots.
+
+        This method is model-agnostic on the DNN side: it wraps the PyTorch
+        forward pass in a simple callable so sklearn's ``permutation_importance``
+        and the SHAP explainers can treat it as a black box.
+
+        Parameters
+        ----------
+        X_val : np.ndarray
+            Scaled validation / test features  (n_samples, n_features).
+        y_val_real : np.ndarray
+            Ground-truth steel values in real scale (kgf)  (n_samples,).
+        feature_names : list of str
+            Feature names aligned with columns of X_val.
+        plotter : ResultsPlotter
+            Instance whose ``output_dir`` will receive the PNG files.
+        feature_pipeline : FeaturePipeline, optional
+            Used to inverse-transform NN outputs to real scale before scoring.
+            Without it the raw (scaled) NN output is used — PFI rankings are
+            still meaningful but MSE values are in normalised space.
+        classifier : sklearn estimator, optional
+            Validity classifier — if provided, PFI is also run for it.
+        X_val_clf : np.ndarray, optional
+            Raw (unscaled) features for the classifier PFI.
+            Falls back to *X_val* when None.
+        y_val_clf : np.ndarray, optional
+            Ground-truth 0/1 validity labels for classifier PFI.
+        n_repeats : int
+            Number of permutation repeats per feature (sklearn PFI).
+        top_n : int
+            Maximum features shown in each chart.
+        run_shap : bool
+            Whether to attempt SHAP analysis.  Requires ``shap`` to be
+            installed; gracefully skips if the import fails.
+        """
+        if self.model is None or not self.is_trained:
+            print("[NNManager] run_feature_importance_analysis: model not trained — skipping.")
+            return
+
+        import torch as _torch
+
+        self.model.eval()
+
+        # ── 1. Build a predict_fn for the NN regressor ───────────────────────
+        def _predict_steel_real(X: np.ndarray) -> np.ndarray:
+            """Returns predictions in real kgf scale."""
+            Xt = _torch.tensor(X.astype(np.float32)).to(self.device)
+            self.model.eval()
+            with _torch.no_grad():
+                out = self.model(Xt).cpu().numpy()
+            col = out[:, 0:1] if out.ndim == 2 else out.reshape(-1, 1)
+            if feature_pipeline is not None and hasattr(
+                feature_pipeline, "inverse_transform_outputs"
+            ):
+                return feature_pipeline.inverse_transform_outputs(col)[:, 0]
+            return col[:, 0]
+
+        # ── 2. Permutation Feature Importance — DNN regressor ────────────────
+        print("\n[NNManager] Running sklearn PFI for DNN regressor…")
+        try:
+            plotter.plot_permutation_importance_sklearn(
+                predict_fn=_predict_steel_real,
+                X_val=X_val,
+                y_val=y_val_real,
+                feature_names=feature_names,
+                task="regression",
+                n_repeats=n_repeats,
+                top_n=top_n,
+                output_file="pfi_sklearn_steel_regression.png",
+            )
+        except Exception as exc:
+            print(f"[NNManager] PFI (regression) failed: {exc}")
+
+        # ── 3. Permutation Feature Importance — validity classifier ──────────
+        _Xc = X_val_clf if X_val_clf is not None else X_val
+        if classifier is not None and y_val_clf is not None:
+            print("\n[NNManager] Running sklearn PFI for validity classifier…")
+            try:
+                classes = list(getattr(classifier, "classes_", [0, 1]))
+                idx_pos = classes.index(1) if 1 in classes else 1
+
+                def _predict_clf(X: np.ndarray) -> np.ndarray:
+                    if hasattr(classifier, "predict_proba"):
+                        return classifier.predict_proba(X)[:, idx_pos]
+                    return classifier.predict(X).astype(float)
+
+                plotter.plot_permutation_importance_sklearn(
+                    predict_fn=_predict_clf,
+                    X_val=_Xc,
+                    y_val=np.asarray(y_val_clf, dtype=float),
+                    feature_names=feature_names,
+                    task="classification",
+                    n_repeats=n_repeats,
+                    top_n=top_n,
+                    output_file="pfi_sklearn_validity_classifier.png",
+                )
+            except Exception as exc:
+                print(f"[NNManager] PFI (classification) failed: {exc}")
+
+        # ── 4. SHAP analysis ─────────────────────────────────────────────────
+        if run_shap:
+            print("\n[NNManager] Running SHAP analysis for DNN regressor…")
+            try:
+                plotter.plot_shap_summary(
+                    model=self.model,
+                    X_background=X_val,
+                    X_explain=X_val,
+                    feature_names=feature_names,
+                    feature_pipeline=feature_pipeline,
+                    output_file="shap_summary_steel.png",
+                )
+            except Exception as exc:
+                print(f"[NNManager] SHAP analysis failed: {exc}")
+            finally:
+                # Ensure model returns to the configured device after CPU move
+                self.model.to(self.device)
+
+        print("[NNManager] Feature importance analysis complete.")
+
     def _validate_and_set_sizes(self, X: np.ndarray, y: np.ndarray):
         """Valida e define os tamanhos de entrada/saída a partir dos dados."""
         if self._input_size != X.shape[1]:
@@ -253,7 +389,7 @@ class NeuralNetworkManager:
             if i == len(loader) - 1:
                 try:
                     from config.settings import RunConfig
-                    if getattr(RunConfig, 'LOG_EPOCH_GRADIENTS', 'last_batch'):
+                    if getattr(RunConfig, 'LOG_EPOCH_GRADIENTS', 'last_batch') == 'last_batch':
                         for name, p in self.model.named_parameters():
                             if p.grad is None:
                                 continue
@@ -278,5 +414,3 @@ class NeuralNetworkManager:
                 loss = criterion(outputs, batch_y)
                 total_loss += loss.item()
         return total_loss / len(loader)
-        self.metrics_dir: Optional[Path] = None
-        self._last_grad_stats: Optional[Dict[str, Any]] = None

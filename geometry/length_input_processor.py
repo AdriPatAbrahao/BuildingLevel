@@ -242,26 +242,93 @@ class LengthProcessor:
         step = 5.0 # Variação em múltiplos de 5 cm
 
         if variation_strategy == "random":
+            # ------------------------------------------------------------------
+            # Pre-compute rectangular constraint data from the ORIGINAL segments.
+            # For each physical node (start point), if there is both an x-group
+            # (segments with horizontal direction) and a y-group (vertical), only
+            # the group with the larger deviation from its seed length is allowed
+            # to change.  This mirrors the logic in DesignSpace._apply_rect_constraint
+            # so that training samples match the geometry seen during optimisation.
+            # ------------------------------------------------------------------
+            def _seg_direction(seg):
+                """Normalised (dx, dy) from start→end."""
+                sx, sy = seg["start"]
+                ex, ey = seg["end"]
+                ln = seg.get("length") or 0.0
+                if ln == 0:
+                    return 0.0, 0.0
+                return (ex - sx) / ln, (ey - sy) / ln
+
+            # Build group index from original segments
+            seed_groups: dict = {}
+            for idx, seg in enumerate(segments):
+                gid = seg.get("group_id")
+                key = gid if gid is not None else f"__solo_{idx}"
+                seed_groups.setdefault(key, []).append(idx)
+
+            # Per-group seed length (max across members — same rule as lower_bounds)
+            seed_len = {
+                gid: max(segments[i]["length"] for i in idxs)
+                for gid, idxs in seed_groups.items()
+            }
+
+            # Classify each group as x / y / mixed
+            group_axis: dict = {}
+            for gid, idxs in seed_groups.items():
+                dirs = [_seg_direction(segments[i]) for i in idxs]
+                has_x = any(abs(d[0]) > 1e-9 for d in dirs)
+                has_y = any(abs(d[1]) > 1e-9 for d in dirs)
+                all_y_zero = all(abs(d[1]) < 1e-9 for d in dirs)
+                all_x_zero = all(abs(d[0]) < 1e-9 for d in dirs)
+                if has_x and all_y_zero:
+                    group_axis[gid] = 'x'
+                elif has_y and all_x_zero:
+                    group_axis[gid] = 'y'
+                else:
+                    group_axis[gid] = 'mixed'
+
+            # Node (start position) → set of group_ids present there
+            node_to_groups: dict = {}
+            for gid, idxs in seed_groups.items():
+                for i in idxs:
+                    node = segments[i]["start"]
+                    node_to_groups.setdefault(node, set()).add(gid)
+
+            # Conflicting (x-group, y-group) pairs at the same node
+            rect_pairs: list = []
+            seen_pairs: set = set()
+            for node, gkeys in node_to_groups.items():
+                x_grps = [g for g in gkeys if group_axis.get(g) == 'x']
+                y_grps = [g for g in gkeys if group_axis.get(g) == 'y']
+                for xg in x_grps:
+                    for yg in y_grps:
+                        canonical = tuple(sorted([xg, yg]))
+                        if canonical not in seen_pairs:
+                            seen_pairs.add(canonical)
+                            rect_pairs.append((xg, yg))
+
+            # ------------------------------------------------------------------
+            # Variation loop — probability raised from 0.4 → 0.7 for better
+            # design-space coverage.
+            # ------------------------------------------------------------------
             max_attempts = 10
             attempt = 0
             while not made_changes and attempt < max_attempts:
-                # Agrupa por group_id quando existir; caso contrário, varia individualmente
                 groups = {}
                 for idx, seg in enumerate(new_segments):
                     gid = seg.get("group_id")
                     groups.setdefault(gid if gid is not None else f"__solo_{idx}", []).append(idx)
 
                 for gid, idxs in groups.items():
-                    # Calcula limites do grupo
                     orig_lengths = [new_segments[i]["length"] for i in idxs]
                     max_lengths = [new_segments[i].get("maxlength") for i in idxs]
                     if any(m is None for m in max_lengths):
                         continue
-                    group_min_allowed = max(orig_lengths)  # lower bound group (hard: respeitar todos)
-                    group_max_allowed = min(max_lengths)   # upper bound group
+                    group_min_allowed = max(orig_lengths)
+                    group_max_allowed = min(max_lengths)
                     if group_max_allowed <= group_min_allowed:
                         continue
-                    if random.random() < 0.4:
+                    if random.random() < 0.7:  # was 0.4
                         variation = group_max_allowed - group_min_allowed
                         max_steps = int(variation / step)
                         if max_steps > 0:
@@ -269,28 +336,55 @@ class LengthProcessor:
                             new_length = group_min_allowed + (num_steps * step)
                             for i in idxs:
                                 self._update_segment_length(new_segments[i], new_length)
-                            made_changes = True    
+                            made_changes = True
                 attempt += 1
-        
+
             if not made_changes:
-                # Se nenhum segmento foi alterado, força pelo menos um
+                # Força pelo menos um grupo a mudar
                 valid_segments = [s for s in new_segments if s.get("maxlength") is not None and s["maxlength"] > s["length"]]
                 if valid_segments:
                     segment = random.choice(valid_segments)
                     original_length = segment["length"]
                     max_length = segment["maxlength"]
-
                     max_variation = max_length - original_length
                     max_steps = int(max_variation / step)
-
                     if max_steps > 0:
                         num_steps = random.randint(1, max_steps)
                         new_length = original_length + (num_steps * step)
-                    
                         self._update_segment_length(segment, new_length)
+
+            # ------------------------------------------------------------------
+            # Post-process: enforce rectangular column constraint.
+            # For each conflicting (x-group, y-group) pair, the group with the
+            # smaller deviation from its seed length is reset to the original.
+            # Ties go to x (same rule as DesignSpace._apply_rect_constraint).
+            # ------------------------------------------------------------------
+            if rect_pairs:
+                curr_groups: dict = {}
+                for idx, seg in enumerate(new_segments):
+                    gid = seg.get("group_id")
+                    key = gid if gid is not None else f"__solo_{idx}"
+                    curr_groups.setdefault(key, []).append(idx)
+
+                for xg, yg in rect_pairs:
+                    x_idxs = curr_groups.get(xg, [])
+                    y_idxs = curr_groups.get(yg, [])
+                    if not x_idxs or not y_idxs:
+                        continue
+                    x_curr = max(new_segments[i]["length"] for i in x_idxs)
+                    y_curr = max(new_segments[i]["length"] for i in y_idxs)
+                    x_dev = x_curr - seed_len.get(xg, x_curr)
+                    y_dev = y_curr - seed_len.get(yg, y_curr)
+                    if x_dev >= y_dev:
+                        # y-group deviates less (or tied) → reset it to seed lengths
+                        for i in y_idxs:
+                            self._update_segment_length(new_segments[i], segments[i]["length"])
+                    else:
+                        # x-group deviates less → reset it to seed lengths
+                        for i in x_idxs:
+                            self._update_segment_length(new_segments[i], segments[i]["length"])
+
         elif variation_strategy == "guided_by_volume":
-            # Implement a more intelligent variation strategy here
-            # For now, it will just do a random variation
             print("Guided by volume strategy not yet implemented. Falling back to random.")
             return self.generate_variation(segments, variation_strategy="random")
 

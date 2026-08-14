@@ -7,6 +7,7 @@ class BuildingConfig:
     SLAB_COORDINATES = constants.DEFAULT_SLAB_COORDINATES
 
     TQS_RESULTS_FILE = paths.TQS_OUTPUT_DIR / NAME / "ESPACIAL" / "RESDES.HTM"
+    TQS_TIMEOUT_SEC = 120  # segundos esperando pelo RESDES.HTM no modo single-thread
 
 class RunConfig:
     """ Configurações que controlam COMO o script executa. """
@@ -15,9 +16,9 @@ class RunConfig:
     USE_GEOMETRIC_ESTIMATE = False
     
     # --- Geração de Dados ---
-    NUM_SAMPLES = 2000
-    NUMSAMPLES = NUM_SAMPLES
-    MAX_ITERATION_FACTOR = 3 # Multiplicador para tentativas de geração
+    NUM_SAMPLES = 2500
+    MAX_ITERATION_FACTOR = 5  # M5ultiplicador para tentativas de geração
+    TQS_TIMEOUT_SEC = 120    # segundos esperando pelo RESDES.HTM no modo single-thread
 
     # --- Métricas e Logging ---
     METRICS_LOG_FORMAT = "json"
@@ -36,7 +37,7 @@ class RunConfig:
 class NeuralNetConfig:
     """ Hiperparâmetros e arquitetura da Rede Neural. """
     # --- Arquitetura ---
-    INPUT_SIZE = 22  # Ajustado ao conjunto atual de features
+    INPUT_SIZE = 43  # Número de features extraídas pelo FeatureEngineer atual
     HIDDEN_LAYERS = [128, 128, 64]
     DROPOUT_RATE = 0.2
     OUTPUT_SIZE = 1
@@ -75,22 +76,29 @@ class ParallelConfig:
       suffix keeps them distinct from ``BuildingConfig.NAME`` (no suffix).
     * ``TIMEOUT_SEC``: increase for very large buildings or slow machines.
     """
-    ENABLED     = True           # set True to activate parallel collection
-    NUM_WORKERS = 2              # number of parallel TQS slots
-    BASE_NAME   = "OptimizedBuilding"  # slot prefix → OptimizedBuilding_01, _02 …
-    TIMEOUT_SEC = 180            # per-job RESDES.HTM wait timeout (seconds)
+    ENABLED           = False          # False = caminho sequencial (OptimizedBuilding); True = pool paralelo
+    NUM_WORKERS       = 1              # relevante apenas quando ENABLED=True
+    BASE_NAME         = "OptimizedBuilding"  # slot prefix → OptimizedBuilding_01, _02 …
+    TIMEOUT_SEC       = 180            # per-job RESDES.HTM wait timeout (seconds)
+    MAX_CONSECUTIVE_TIMEOUTS = 3       # stop collection only after this many timeouts in a row
+    VALIDITY_CHECK_DLL = False  # TQS DLL check: desativado — investigar erros classe==2 após treino
 
 
 class ObjectiveConfig:
     """Parameters used by the optimization objective function."""
     CONCRETE_PRICE_M3 = 10.0
     STEEL_PRICE_KG = 100.0
+    FORM_PRICE_M2 = 10.0  # R$/m² — custo de forma (fôrma) dos pilares; AJUSTAR para o valor real de mercado
     LENGTH_STEP_CM = 20.0
     INVALID_PROB_THRESHOLD = 0.5
     INVALID_COST_PENALTY = 1_000_000
     STOP_MIN_STEEL_KG = 0.0
     STOP_MAX_INVALID_PROB = 0.1
     MAX_TIME_SEC = 600
+
+    STEEL_MIN_KGF   = None   # bounds desativados — validade determinada exclusivamente pelo TQS DLL
+    STEEL_MAX_KGF   = None
+    CONCRETE_MIN_M3 = None
 
     
     
