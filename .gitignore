@@ -1,0 +1,23 @@
+# --- Python bytecode / cache ---
+__pycache__/
+*.pyc
+*.pyo
+
+# --- Resultados de treino/experimentos (gerados localmente, não versionados) ---
+outputs/experiments/
+outputs/results/
+
+# --- Notas/documentos internos de planejamento (Trae IDE) ---
+.trae/
+
+# --- Imagens geradas (plots, gráficos) ---
+*.png
+*.jpg
+*.jpeg
+
+# --- Ambiente virtual ---
+.venv/
+venv/
+
+# --- Outros artefatos locais ---
+*.tmp
