@@ -250,7 +250,12 @@ Uma amostra é considerada **válida** se:
 - O TQS concluiu sem erro (`success = True`)
 - O arquivo `RESDES.HTM` foi gerado e parseado com sucesso
 - Os valores de aço e concreto são positivos e finitos
+- A DLL de erros críticos está disponível e retorna zero erros de classe crítica
 - (Quando ativados) os limites `STEEL_MIN_KGF`, `STEEL_MAX_KGF`, `CONCRETE_MIN_M3` são respeitados
+
+A validação pela DLL é obrigatória (`VALIDITY_CHECK_DLL = True`) e opera em
+modo *fail-closed*: indisponibilidade da DLL, API incompleta ou falha de leitura
+rejeita a amostra, em vez de classificá-la silenciosamente como válida.
 
 ### 5.3 Coleta Paralela vs. Sequencial
 
@@ -264,7 +269,12 @@ O sistema suporta dois modos:
 **Modo paralelo** (`ParallelConfig.ENABLED = True`):
 - `NUM_WORKERS` subprocessos, cada um com diretório isolado (`OptimizedBuilding_01`, `_02`, ...)
 - Janela deslizante: novos jobs são submetidos à medida que resultados chegam
-- Atenção: o TQS grava arquivos temporários em `T:\TQSW\USUARIO`, o que pode causar conflito entre instâncias simultâneas. Recomenda-se usar modo sequencial.
+- Configuração validada atual: um worker no slot `OptimizedBuilding_01`
+- O checkpoint v2 preserva regressão, classificador, configurações válidas,
+  hashes de deduplicação e hash do CSV semente, com escrita atômica a cada 10 minutos
+- A coleta pode ser executada sem treinamento com `main.py --collect-only`; uma
+  execução interrompida é retomada com `--resume-run`, e o treinamento posterior
+  usa `--train-from-checkpoint`
 
 ### 5.4 Coleta da Configuração Semente
 
@@ -1007,7 +1017,9 @@ main.py
 | `NUM_SAMPLES` | 2500 amostras válidas |
 | `MAX_ITERATION_FACTOR` | 5 (máx 12.500 tentativas) |
 | `TQS_TIMEOUT_SEC` (modo sequencial, `RunConfig`/`BuildingConfig`) | 120 s |
-| `ParallelConfig.TIMEOUT_SEC` (modo paralelo, desativado por padrão) | 180 s |
+| `ParallelConfig.TIMEOUT_SEC` (modo paralelo, ativo com 1 worker) | 180 s |
+| `CHECKPOINT_INTERVAL_MIN` | 10 min |
+| `VALIDITY_CHECK_DLL` | `True` (obrigatório, *fail-closed*) |
 | `SEED` | 42 |
 
 ### 17.3 Algoritmo Genético

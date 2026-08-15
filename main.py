@@ -17,6 +17,7 @@ Date: March 2025
 """
 # Standard library imports
 import copy
+import argparse
 import random as py_random
 import traceback
 import time # Added for potential delays and timing
@@ -176,11 +177,36 @@ class BuildingOptimizer:
     # Main Workflow Method
     # -------------------------------------------------------------------------
 
-    def run_optimization(self):
-        """Executes the main optimization workflow."""
+    def run_optimization(
+        self,
+        *,
+        collect_only: bool = False,
+        train_from_checkpoint: bool = False,
+    ):
+        """Execute collection and/or training according to the selected mode."""
         print(f"\n--- Starting Optimization Workflow ---")
         start_time_total = time.time()
         try:
+            if train_from_checkpoint:
+                checkpoint = self._load_checkpoint()
+                if not checkpoint:
+                    raise RuntimeError(
+                        "Training requested but checkpoint.json was not found."
+                    )
+                (
+                    feature_vectors,
+                    output_values,
+                    _,
+                    self.current_iteration,
+                    _,
+                ) = self._restore_collection_state(checkpoint)
+                self._validate_collected_data(feature_vectors, output_values)
+                print("\n--- TRAINING FROM SAVED COLLECTION ---")
+                self._train_and_evaluate(feature_vectors, output_values)
+                self._save_results()
+                print("--- TRAINING FROM CHECKPOINT COMPLETE ---")
+                return
+
             # --- FASE 1: GERAÃ‡ÃƒO DE DADOS ---
             print("\n--- PHASE 1: DATA COLLECTION ---")
             initial_segments = self._load_initial_segments()
@@ -188,6 +214,13 @@ class BuildingOptimizer:
             feature_vectors, output_values = self._collect_training_data(initial_segments)
             self._validate_collected_data(feature_vectors, output_values)
             print(f"--- PHASE 1 COMPLETE: {len(feature_vectors)} samples generated. ---")
+
+            if collect_only:
+                print(
+                    "--- COLLECTION-ONLY MODE COMPLETE: "
+                    "training was not started. ---"
+                )
+                return
 
             # --- FASE 2: TREINAMENTO E AVALIAÃ‡ÃƒO ---
             print("\n--- PHASE 2: PIPELINE & MODEL TRAINING ---")
@@ -208,8 +241,7 @@ class BuildingOptimizer:
             # Optional: Log detailed traceback for debugging
             print("Traceback:")
             print(traceback.format_exc())
-            # Consider re-raising or exiting based on desired behavior on error
-            # raise # Uncomment to stop execution completely on error
+            raise
 
     # -------------------------------------------------------------------------
     # Helper Methods for run_optimization Workflow Steps
@@ -303,7 +335,31 @@ class BuildingOptimizer:
         output_values:   List[List[float]] = []
         processed_valid = 0
         current_iter    = 0
+        seed_processed  = False
         last_ck_ts      = time.time()
+
+        if (
+            getattr(RunConfig, 'CHECKPOINTS_ENABLED', True)
+            and getattr(RunConfig, 'RESUME_FROM_CHECKPOINT', False)
+        ):
+            checkpoint = self._load_checkpoint()
+            if checkpoint:
+                if int(checkpoint.get('checkpoint_version', 1)) < 2:
+                    raise RuntimeError(
+                        "Legacy checkpoint does not contain classifier state; "
+                        "parallel resume aborted."
+                    )
+                (
+                    feature_vectors,
+                    output_values,
+                    processed_valid,
+                    current_iter,
+                    seed_processed,
+                ) = self._restore_collection_state(checkpoint)
+                print(
+                    "Resuming parallel collection from checkpoint: "
+                    f"iteration={current_iter}, valid={processed_valid}."
+                )
 
         # ── Process seed configuration sequentially in the main process ──────
         print(
@@ -311,16 +367,18 @@ class BuildingOptimizer:
             f"| {num_workers} worker(s) | "
             f"target={self.num_target_samples} samples ---"
         )
-        print("\nAnalyzing seed configuration (sequential, main process)…")
-        steel, concrete, col_polys_s, beam_defs_s, is_valid_s = (
-            self._get_analysis_results(initial_segments)
-        )
-        if concrete is None:
-            raise RuntimeError(
-                "Seed configuration analysis failed. Cannot start parallel collection."
+        if not seed_processed:
+            print("\nAnalyzing seed configuration (sequential, main process)...")
+            steel, concrete, col_polys_s, beam_defs_s, is_valid_s = (
+                self._get_analysis_results(initial_segments)
             )
-        fv_seed = self._extract_feature_vector(col_polys_s, beam_defs_s)
-        if fv_seed:
+            if concrete is None:
+                raise RuntimeError(
+                    "Seed configuration analysis failed. Cannot start parallel collection."
+                )
+            fv_seed = self._extract_feature_vector(col_polys_s, beam_defs_s)
+            if not fv_seed:
+                raise RuntimeError("Seed feature extraction failed.")
             self._clf_features.append(fv_seed)
             self._clf_labels.append(1 if is_valid_s else 0)
             if is_valid_s:
@@ -336,10 +394,19 @@ class BuildingOptimizer:
                         _copy.deepcopy(initial_segments)
                     )
                 processed_valid += 1
-        print(
-            f"Seed -> steel={steel:.1f} kgf  concrete={concrete:.4f} m3  "
-            f"valid={is_valid_s}"
-        )
+            seed_processed = True
+            print(
+                f"Seed -> steel={steel:.1f} kgf  concrete={concrete:.4f} m3  "
+                f"valid={is_valid_s}"
+            )
+            if getattr(RunConfig, "CHECKPOINTS_ENABLED", True):
+                self._save_checkpoint(
+                    feature_vectors,
+                    output_values,
+                    processed_valid,
+                    current_iteration=current_iter,
+                    seed_processed=True,
+                )
 
         # ── Maps job_id → (col_polys, beam_defs, new_segments) ───────────────
         # Kept in the main process so we can do feature extraction after results
@@ -484,12 +551,13 @@ class BuildingOptimizer:
                     )
                     if time.time() - last_ck_ts >= ck_interval:
                         last_ck_ts = time.time()
-                        try:
-                            self._save_checkpoint(
-                                feature_vectors, output_values, processed_valid
-                            )
-                        except Exception:
-                            pass
+                        self._save_checkpoint(
+                            feature_vectors,
+                            output_values,
+                            processed_valid,
+                            current_iteration=current_iter,
+                            seed_processed=seed_processed,
+                        )
 
                 # Replenish: keep pipeline full while target not reached
                 if (
@@ -507,6 +575,15 @@ class BuildingOptimizer:
             print(
                 f"Warning: only {processed_valid}/{self.num_target_samples} "
                 "valid samples collected."
+            )
+        if getattr(RunConfig, "CHECKPOINTS_ENABLED", True):
+            self._save_checkpoint(
+                feature_vectors,
+                output_values,
+                processed_valid,
+                current_iteration=current_iter,
+                seed_processed=seed_processed,
+                collection_complete=processed_valid >= self.num_target_samples,
             )
         return feature_vectors, output_values
 
@@ -751,16 +828,43 @@ class BuildingOptimizer:
         except Exception:
             pass
 
-    def _save_checkpoint(self, feature_vectors: List[List[float]], output_values: List[List[float]], valid_count: int):
+    def _save_checkpoint(
+        self,
+        feature_vectors: List[List[float]],
+        output_values: List[List[float]],
+        valid_count: int,
+        *,
+        current_iteration: Optional[int] = None,
+        seed_processed: bool = True,
+        collection_complete: bool = False,
+    ):
+        seed_path = Path(self.length_processor.csv_path).resolve()
         obj = {
+            'checkpoint_version': 2,
             'timestamp': time.time(),
-            'current_iteration': self.current_iteration,
+            'current_iteration': (
+                self.current_iteration
+                if current_iteration is None
+                else int(current_iteration)
+            ),
             'valid_count': valid_count,
             'feature_vectors': feature_vectors,
-            'output_values': output_values
+            'output_values': output_values,
+            'classifier_features': self._clf_features,
+            'classifier_labels': self._clf_labels,
+            'generated_valid_configurations': self.generated_valid_configurations,
+            'seen_segments_hashes': sorted(self._seen_segments_hash),
+            'seed_processed': bool(seed_processed),
+            'collection_complete': bool(collection_complete),
+            'target_valid_samples': int(self.num_target_samples),
+            'seed_csv': str(seed_path),
+            'seed_sha256': hashlib.sha256(seed_path.read_bytes()).hexdigest(),
         }
-        with open(self.exp_manager.run_dir / 'checkpoint.json', 'w', encoding='utf-8') as f:
-            json.dump(obj, f)
+        checkpoint_path = self.exp_manager.run_dir / 'checkpoint.json'
+        temporary_path = checkpoint_path.with_suffix('.json.tmp')
+        with open(temporary_path, 'w', encoding='utf-8') as f:
+            json.dump(obj, f, ensure_ascii=False)
+        temporary_path.replace(checkpoint_path)
 
     def _load_checkpoint(self) -> Optional[Dict]:
         p = self.exp_manager.run_dir / 'checkpoint.json'
@@ -768,9 +872,43 @@ class BuildingOptimizer:
             return None
         try:
             with open(p, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception:
-            return None
+                checkpoint = json.load(f)
+        except Exception as exc:
+            raise RuntimeError(f"Could not read checkpoint '{p}': {exc}") from exc
+
+        stored_seed_hash = checkpoint.get('seed_sha256')
+        if stored_seed_hash:
+            seed_path = Path(self.length_processor.csv_path).resolve()
+            current_seed_hash = hashlib.sha256(seed_path.read_bytes()).hexdigest()
+            if stored_seed_hash != current_seed_hash:
+                raise RuntimeError(
+                    "Checkpoint seed differs from the current seed CSV; "
+                    "resume aborted."
+                )
+        return checkpoint
+
+    def _restore_collection_state(self, checkpoint: Dict):
+        """Restore all regression, classifier and deduplication state."""
+        feature_vectors = checkpoint.get('feature_vectors', [])
+        output_values = checkpoint.get('output_values', [])
+        valid_count = int(checkpoint.get('valid_count', len(feature_vectors)))
+        current_iteration = int(checkpoint.get('current_iteration', 0))
+        self._clf_features = checkpoint.get('classifier_features', [])
+        self._clf_labels = checkpoint.get('classifier_labels', [])
+        self.generated_valid_configurations = checkpoint.get(
+            'generated_valid_configurations', []
+        )
+        self._seen_segments_hash = set(
+            checkpoint.get('seen_segments_hashes', [])
+        )
+        seed_processed = bool(checkpoint.get('seed_processed', False))
+        return (
+            feature_vectors,
+            output_values,
+            valid_count,
+            current_iteration,
+            seed_processed,
+        )
 
     def _preflight_checks(self):
         try:
@@ -1734,18 +1872,58 @@ class BuildingOptimizer:
 # Script Execution Entry Point
 # =============================================================================
 
-def main():
-    """Main function to run the building optimization process."""
+def main(argv=None):
+    """Run collection and training with explicit, resumable modes."""
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--collect-only",
+        action="store_true",
+        help="Collect TQS data and checkpoint it without starting training.",
+    )
+    mode.add_argument(
+        "--train-from-checkpoint",
+        type=Path,
+        help="Train only, using checkpoint.json from an existing run.",
+    )
+    parser.add_argument(
+        "--resume-run",
+        type=Path,
+        help="Existing experiment directory to resume in collection-only mode.",
+    )
+    parser.add_argument(
+        "--num-samples",
+        type=int,
+        help="Override the target number of valid samples for this run.",
+    )
+    args = parser.parse_args(argv)
+
+    if args.resume_run and not args.collect_only:
+        parser.error("--resume-run requires --collect-only.")
+    if args.num_samples is not None:
+        if args.num_samples <= 0:
+            parser.error("--num-samples must be positive.")
+        RunConfig.NUM_SAMPLES = args.num_samples
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s: %(message)s')
 
     # 1. Inicializa o gerenciador de experimentos.
     #    Ele usarÃ¡ o diretÃ³rio definido em config/paths.py.
     #    VocÃª pode dar um nome descritivo para a execuÃ§Ã£o.
-    exp_manager = ExperimentManager(
-        base_dir=paths.EXPERIMENTS_DIR,
-        run_name=f"Treino_com_{RunConfig.NUM_SAMPLES}_amostras"
-    )
+    if args.train_from_checkpoint:
+        checkpoint_path = args.train_from_checkpoint.resolve()
+        if checkpoint_path.name != 'checkpoint.json':
+            parser.error("--train-from-checkpoint must point to checkpoint.json.")
+        exp_manager = ExperimentManager.from_existing(checkpoint_path.parent)
+    elif args.resume_run:
+        exp_manager = ExperimentManager.from_existing(args.resume_run)
+    else:
+        mode_name = "Coleta" if args.collect_only else "Treino"
+        exp_manager = ExperimentManager(
+            base_dir=paths.EXPERIMENTS_DIR,
+            run_name=f"{mode_name}_com_{RunConfig.NUM_SAMPLES}_amostras",
+        )
 
     # (Opcional, mas recomendado) Configurar o logging para salvar no diretÃ³rio do experimento
     # setup_logging(log_dir=exp_manager.run_dir)
@@ -1755,21 +1933,18 @@ def main():
         optimizer = BuildingOptimizer(exp_manager)
         
         # 3. Executa o fluxo de otimizaÃ§Ã£o
-        optimizer.run_optimization()
+        optimizer.run_optimization(
+            collect_only=args.collect_only,
+            train_from_checkpoint=bool(args.train_from_checkpoint),
+        )
         
         logging.info(f"ExecuÃ§Ã£o {exp_manager.run_dir.name} finalizada com sucesso.")
 
     except Exception as e:
         logging.error(f"ExecuÃ§Ã£o {exp_manager.run_dir.name} falhou.", exc_info=True)
 
-    except Exception as main_error:
-         print("\n--- A CRITICAL ERROR OCCURRED IN MAIN EXECUTION ---")
-         print(f"Error Type: {type(main_error).__name__}")
-         print(f"Error Details: {main_error}")
-         # Log detailed traceback
-         print("\nTraceback:")
-         print(traceback.format_exc())
-         print("--- Script execution aborted ---")
+        raise
+
     finally:
         # This block executes whether an error occurred or not
         print("\n===========================================")

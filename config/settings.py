@@ -29,7 +29,7 @@ class RunConfig:
     MONITORING_ENABLED = True
     MONITOR_INTERVAL_MIN = 30
     CHECKPOINTS_ENABLED = True
-    CHECKPOINT_INTERVAL_MIN = 60
+    CHECKPOINT_INTERVAL_MIN = 10
     RESUME_FROM_CHECKPOINT = True
     ALERT_STUCK_THRESHOLD_MIN = 90
 
@@ -76,7 +76,7 @@ class ParallelConfig:
       suffix keeps them distinct from ``BuildingConfig.NAME`` (no suffix).
     * ``TIMEOUT_SEC``: increase for very large buildings or slow machines.
     """
-    ENABLED           = False          # False = caminho sequencial (OptimizedBuilding); True = pool paralelo
+    ENABLED           = True           # pool isolado; iniciar com um worker validado
     NUM_WORKERS       = 1              # relevante apenas quando ENABLED=True
     BASE_NAME         = "OptimizedBuilding"  # slot prefix → OptimizedBuilding_01, _02 …
     TIMEOUT_SEC       = 180            # per-job RESDES.HTM wait timeout (seconds)

@@ -5,7 +5,13 @@ from typing import Any, Dict
 import shutil
 
 # Importe suas classes de configuração para poder tirar um "snapshot" delas
-from config.settings import BuildingConfig, RunConfig, NeuralNetConfig
+from config.settings import (
+    BuildingConfig,
+    NeuralNetConfig,
+    ObjectiveConfig,
+    ParallelConfig,
+    RunConfig,
+)
 from config.constants import DEFAULT_BEAM_WIDTH_CM # Exemplo de constante
 from config.vector_config import VectorConfig
 
@@ -42,12 +48,35 @@ class ExperimentManager:
         # Salva um snapshot das configurações no momento da criação
         self._save_config_snapshot()
 
+    @classmethod
+    def from_existing(cls, run_dir: Path) -> "ExperimentManager":
+        """Open an existing experiment directory without creating a new run."""
+        resolved = Path(run_dir).resolve()
+        if not resolved.is_dir():
+            raise FileNotFoundError(
+                f"Experiment directory does not exist: {resolved}"
+            )
+
+        manager = cls.__new__(cls)
+        manager.run_dir = resolved
+        manager.plots_dir = resolved / "plots"
+        manager.images_dir = resolved / "images"
+        manager.metrics_dir = resolved / "metrics"
+        manager.plots_dir.mkdir(exist_ok=True)
+        manager.images_dir.mkdir(exist_ok=True)
+        manager.metrics_dir.mkdir(exist_ok=True)
+        print(f"[ExperimentManager] Retomando execução: {resolved.name}")
+        print(f"[ExperimentManager] Diretório: {resolved}")
+        return manager
+
     def _save_config_snapshot(self):
         """Salva uma cópia de todas as configurações relevantes em um arquivo JSON."""
         config_snapshot = {
             "BuildingConfig": {k: v for k, v in vars(BuildingConfig).items() if not k.startswith('__')},
             "RunConfig": {k: v for k, v in vars(RunConfig).items() if not k.startswith('__')},
             "NeuralNetConfig": {k: v for k, v in vars(NeuralNetConfig).items() if not k.startswith('__')},
+            "ParallelConfig": {k: v for k, v in vars(ParallelConfig).items() if not k.startswith('__')},
+            "ObjectiveConfig": {k: v for k, v in vars(ObjectiveConfig).items() if not k.startswith('__')},
             "VectorConfig": {
                 "WALL_SEGMENTS_COUNT": len(VectorConfig.WALL_SEGMENTS),
                 # Não salvamos os segmentos inteiros para manter o arquivo limpo
