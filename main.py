@@ -79,6 +79,59 @@ import hashlib
 import json
 from pathlib import Path
 
+
+def _pid_exists(pid: int) -> bool:
+    """Return whether a process exists, using psutil when available."""
+    try:
+        import psutil
+        return bool(psutil.pid_exists(pid))
+    except Exception:
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+
+def _acquire_collection_lock(lock_path: Path, run_dir: Path) -> None:
+    """Atomically prevent two collectors from sharing the same TQS slot."""
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "pid": os.getpid(),
+        "run_dir": str(Path(run_dir).resolve()),
+        "created_at": time.time(),
+    }
+    for _ in range(2):
+        try:
+            with open(lock_path, "x", encoding="utf-8") as stream:
+                json.dump(payload, stream)
+            return
+        except FileExistsError:
+            try:
+                existing = json.loads(lock_path.read_text(encoding="utf-8"))
+                existing_pid = int(existing.get("pid", -1))
+            except Exception:
+                existing_pid = -1
+            if existing_pid > 0 and _pid_exists(existing_pid):
+                raise RuntimeError(
+                    "Another collection process is active for this TQS slot: "
+                    f"PID={existing_pid}, lock='{lock_path}'."
+                )
+            lock_path.unlink(missing_ok=True)
+    raise RuntimeError(f"Could not acquire collection lock '{lock_path}'.")
+
+
+def _release_collection_lock(lock_path: Optional[Path]) -> None:
+    """Remove only a lock owned by the current process."""
+    if lock_path is None or not lock_path.exists():
+        return
+    try:
+        existing = json.loads(lock_path.read_text(encoding="utf-8"))
+        if int(existing.get("pid", -1)) == os.getpid():
+            lock_path.unlink(missing_ok=True)
+    except Exception:
+        pass
+
 # =============================================================================
 # Main Optimizer Class
 # =============================================================================
@@ -419,8 +472,19 @@ class BuildingOptimizer:
                 return None
             current_iter += 1
             try:
+                valid_labels = sum(1 for label in self._clf_labels if label == 1)
+                invalid_labels = len(self._clf_labels) - valid_labels
+                invalid_fraction = (
+                    invalid_labels / len(self._clf_labels)
+                    if self._clf_labels
+                    else 0.0
+                )
+                variation_strategy = (
+                    "upper_biased" if invalid_fraction >= 0.35 else "random"
+                )
                 new_segs = self._generate_segment_variation(
-                    initial_segments, "random"
+                    initial_segments,
+                    variation_strategy,
                 )
                 seg_hash = hashlib.sha256(
                     json.dumps(new_segs, ensure_ascii=False).encode()
@@ -840,7 +904,7 @@ class BuildingOptimizer:
     ):
         seed_path = Path(self.length_processor.csv_path).resolve()
         obj = {
-            'checkpoint_version': 2,
+            'checkpoint_version': 3,
             'timestamp': time.time(),
             'current_iteration': (
                 self.current_iteration
@@ -854,9 +918,12 @@ class BuildingOptimizer:
             'classifier_labels': self._clf_labels,
             'generated_valid_configurations': self.generated_valid_configurations,
             'seen_segments_hashes': sorted(self._seen_segments_hash),
+            'python_random_state': py_random.getstate(),
             'seed_processed': bool(seed_processed),
             'collection_complete': bool(collection_complete),
             'target_valid_samples': int(self.num_target_samples),
+            'parallel_base_name': str(ParallelConfig.BASE_NAME),
+            'worker_count': int(ParallelConfig.NUM_WORKERS),
             'seed_csv': str(seed_path),
             'seed_sha256': hashlib.sha256(seed_path.read_bytes()).hexdigest(),
         }
@@ -901,6 +968,14 @@ class BuildingOptimizer:
         self._seen_segments_hash = set(
             checkpoint.get('seen_segments_hashes', [])
         )
+        random_state = checkpoint.get('python_random_state')
+        if random_state is not None:
+            def _lists_to_tuples(value):
+                if isinstance(value, list):
+                    return tuple(_lists_to_tuples(item) for item in value)
+                return value
+
+            py_random.setstate(_lists_to_tuples(random_state))
         seed_processed = bool(checkpoint.get('seed_processed', False))
         return (
             feature_vectors,
@@ -1897,6 +1972,11 @@ def main(argv=None):
         type=int,
         help="Override the target number of valid samples for this run.",
     )
+    parser.add_argument(
+        "--checkpoint-minutes",
+        type=int,
+        help="Override the checkpoint interval for this collection run.",
+    )
     args = parser.parse_args(argv)
 
     if args.resume_run and not args.collect_only:
@@ -1905,6 +1985,10 @@ def main(argv=None):
         if args.num_samples <= 0:
             parser.error("--num-samples must be positive.")
         RunConfig.NUM_SAMPLES = args.num_samples
+    if args.checkpoint_minutes is not None:
+        if args.checkpoint_minutes <= 0:
+            parser.error("--checkpoint-minutes must be positive.")
+        RunConfig.CHECKPOINT_INTERVAL_MIN = args.checkpoint_minutes
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s: %(message)s')
 
@@ -1928,6 +2012,14 @@ def main(argv=None):
     # (Opcional, mas recomendado) Configurar o logging para salvar no diretÃ³rio do experimento
     # setup_logging(log_dir=exp_manager.run_dir)
 
+    collection_lock = None
+    if args.collect_only:
+        collection_lock = (
+            paths.OUTPUTS_DIR
+            / f".{ParallelConfig.BASE_NAME}_collection.lock"
+        )
+        _acquire_collection_lock(collection_lock, exp_manager.run_dir)
+
     try:
         # 2. Instancia o otimizador, passando o gerenciador de experimento
         optimizer = BuildingOptimizer(exp_manager)
@@ -1946,6 +2038,7 @@ def main(argv=None):
         raise
 
     finally:
+        _release_collection_lock(collection_lock)
         # This block executes whether an error occurred or not
         print("\n===========================================")
         print("   Building Optimization Script Finished   ")

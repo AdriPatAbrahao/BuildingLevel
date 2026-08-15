@@ -241,7 +241,7 @@ class LengthProcessor:
         made_changes = False
         step = 5.0 # Variação em múltiplos de 5 cm
 
-        if variation_strategy == "random":
+        if variation_strategy in {"random", "upper_biased"}:
             # ------------------------------------------------------------------
             # Pre-compute rectangular constraint data from the ORIGINAL segments.
             # If seed rectangles from an x-group and a y-group physically overlap,
@@ -289,11 +289,19 @@ class LengthProcessor:
                     group_max_allowed = min(max_lengths)
                     if group_max_allowed <= group_min_allowed:
                         continue
-                    if random.random() < 0.7:  # was 0.4
+                    change_probability = (
+                        1.0 if variation_strategy == "upper_biased" else 0.7
+                    )
+                    if random.random() < change_probability:
                         variation = group_max_allowed - group_min_allowed
                         max_steps = int(variation / step)
                         if max_steps > 0:
-                            num_steps = random.randint(1, max_steps)
+                            minimum_step = 1
+                            if variation_strategy == "upper_biased":
+                                # Generic validity-oriented stratum: explore
+                                # only the upper half of each CSV-defined range.
+                                minimum_step = max(1, int(np.ceil(max_steps * 0.5)))
+                            num_steps = random.randint(minimum_step, max_steps)
                             new_length = group_min_allowed + (num_steps * step)
                             for i in idxs:
                                 self._update_segment_length(new_segments[i], new_length)

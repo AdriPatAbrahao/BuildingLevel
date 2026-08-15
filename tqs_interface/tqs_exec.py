@@ -81,8 +81,9 @@ def RunModel(building_name):
     job.EnterTask(TQSExec.TaskFolder(building_name, TQSExec.TaskFolder.FOLDER_FRAMES))
     job.EnterTask(TQSExec.TaskGlobalProc(
         gridSlabsTrnsf=0,
+        frameBeamsTrnsf=0,
         slabs=0,
-        beams=3,
+        beams=1,
         columns=2
     ))
     job.EnterTask(TQSExec.TaskStructuralReport())

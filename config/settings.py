@@ -78,7 +78,7 @@ class ParallelConfig:
     """
     ENABLED           = True           # pool isolado; iniciar com um worker validado
     NUM_WORKERS       = 1              # relevante apenas quando ENABLED=True
-    BASE_NAME         = "OptimizedBuilding"  # slot prefix → OptimizedBuilding_01, _02 …
+    BASE_NAME         = "TrainBuild815"  # fresh validated slot: TrainBuild815_01
     TIMEOUT_SEC       = 180            # per-job RESDES.HTM wait timeout (seconds)
     MAX_CONSECUTIVE_TIMEOUTS = 3       # stop collection only after this many timeouts in a row
     # Required for collection: unavailable/failed DLL checks reject the sample.

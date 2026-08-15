@@ -198,7 +198,7 @@ O TQS é executado por chamada de DLL bloqueante (`job.Execute()`). Para preveni
 
 ### 4.1 Definição das Variáveis
 
-O espaço de projeto é definido pelo arquivo CSV semente (`Building1c.csv`). Cada linha do CSV representa um segmento de pilar; linhas com o mesmo `group_id` são vinculadas (variam juntas). O vetor de decisão `x ∈ ℝᵈ` tem dimensão `d = número_de_grupos_únicos`.
+O espaço de projeto é definido pelo arquivo CSV semente (`BuildingInput.csv`). Cada linha do CSV representa um segmento de pilar; linhas com o mesmo `group_id` são vinculadas (variam juntas). O vetor de decisão `x ∈ ℝᵈ` tem dimensão `d = número_de_grupos_únicos`.
 
 Para cada grupo `i`:
 - **Limite inferior:** `lb_i = max(length_inicial)` para os segmentos do grupo
@@ -267,14 +267,25 @@ O sistema suporta dois modos:
 - Taxa: ~1 amostra/50 s → ~35 horas para 2500 amostras
 
 **Modo paralelo** (`ParallelConfig.ENABLED = True`):
-- `NUM_WORKERS` subprocessos, cada um com diretório isolado (`OptimizedBuilding_01`, `_02`, ...)
+- `NUM_WORKERS` subprocessos, cada um com diretório isolado (`TrainBuild815_01`, `_02`, ...)
 - Janela deslizante: novos jobs são submetidos à medida que resultados chegam
-- Configuração validada atual: um worker no slot `OptimizedBuilding_01`
-- O checkpoint v2 preserva regressão, classificador, configurações válidas,
-  hashes de deduplicação e hash do CSV semente, com escrita atômica a cada 10 minutos
+- Configuração validada atual: um worker no slot `TrainBuild815_01`
+- O checkpoint v3 preserva regressão, classificador, configurações válidas,
+  hashes de deduplicação, estado do gerador aleatório e hash do CSV semente,
+  com escrita atômica a cada 10 minutos
 - A coleta pode ser executada sem treinamento com `main.py --collect-only`; uma
   execução interrompida é retomada com `--resume-run`, e o treinamento posterior
   usa `--train-from-checkpoint`
+
+#### Validação escalonada antes da coleta completa
+
+O teste 12 executou uma coleta limpa em duas etapas, sem treinamento: primeiro 10
+amostras válidas e depois retomada do mesmo checkpoint até 30. O resultado final
+foi 30 amostras válidas e 10 inválidas em 40 tentativas, sem configurações ou
+hashes duplicados, com 43 atributos finitos em todas as entradas. Os 10 registros
+da primeira etapa foram preservados exatamente após a retomada. A coleta completa
+fica liberada a partir desse checkpoint; o treinamento deve continuar separado e
+somente depois da auditoria do conjunto completo.
 
 ### 5.4 Coleta da Configuração Semente
 
@@ -939,7 +950,7 @@ Um hash SHA-256 do array de dados de treinamento é computado e registrado nos m
 main.py
 │
 ├── 1. Inicialização
-│   ├── LengthProcessor — lê segmentos do CSV semente (Building1b.csv)
+│   ├── LengthProcessor — lê segmentos do CSV semente (BuildingInput.csv)
 │   ├── FeaturePipeline — inicializa escaladores (não ajustados ainda)
 │   ├── NeuralNetworkManager — instancia modelo (não treinado)
 │   ├── TQSModelManager — prepara interface com TQS
@@ -980,7 +991,7 @@ main.py
 │   └── run_full_diagnostics() → ~15 gráficos em plots/
 │
 └── 6. Otimização
-    ├── DesignSpace(Building1c.csv) → espaço de busca
+    ├── DesignSpace(BuildingInput.csv) → espaço de busca
     ├── BuildingInference() → carrega modelo treinado
     ├── ObjectiveFunction(design_space, inference)
     ├── GeneticOptimizer.run() → 80 gerações × 40 indivíduos

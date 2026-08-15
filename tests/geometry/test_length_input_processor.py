@@ -155,3 +155,34 @@ def test_generate_variation_with_no_possible_change():
     
     assert new_segments[0]["length"] == segments[0]["length"]
     assert new_segments[0]["end"] == segments[0]["end"]
+
+
+def test_upper_biased_variation_uses_relative_csv_bounds():
+    processor = LengthProcessor()
+    segments = [
+        {
+            "start": (0.0, 0.0),
+            "end": (20.0, 0.0),
+            "length": 20.0,
+            "maxlength": 120.0,
+            "binary": 1,
+            "group_id": "horizontal",
+        },
+        {
+            "start": (300.0, 0.0),
+            "end": (280.0, 0.0),
+            "length": 20.0,
+            "maxlength": 120.0,
+            "binary": 1,
+            "group_id": "opposite",
+        },
+    ]
+
+    random.seed(42)
+    varied = processor.generate_variation(
+        segments,
+        variation_strategy="upper_biased",
+    )
+
+    for segment in varied:
+        assert 70.0 <= segment["length"] <= segment["maxlength"]
