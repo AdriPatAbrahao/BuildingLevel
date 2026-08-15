@@ -1,6 +1,7 @@
 
 from typing import List, Dict
 from shapely.geometry import Polygon, LineString, MultiLineString, GeometryCollection, box
+from shapely.geometry.polygon import orient
 from shapely.ops import unary_union
 import numpy as np
 from config.constants import DEFAULT_BEAM_WIDTH_CM, DEFAULT_BEAM_HEIGHT_CM
@@ -23,15 +24,15 @@ class FeatureEngineer:
         """
         Computes all engineered features and returns them as a single vector.
 
-        Feature layout (27 total, schema v6):
+        Feature layout (25 total, schema v7):
           [0-3]   Non-redundant column area stats (4)
           [4-11]  Physical clear-span stats separated into X and Y (8)
-          [12-16] Inertia (sum_Ix, sum_Iy, mean_Ix, mean_Iy, ratio) (5)
-          [17]    Mean column compactness (1)
-          [18-19] Fixed-reference area spread in X and Y (2)
-          [20-21] Section-shape descriptors (2)
-          [22-23] Directional radius of gyration (2)
-          [24-26] Section directional aspect ratio (3)
+          [12-14] Inertia (sum_Ix, sum_Iy, ratio) (3)
+          [15]    Mean column compactness (1)
+          [16-17] Fixed-reference area spread in X and Y (2)
+          [18-19] Section-shape descriptors (2)
+          [20-21] Directional radius of gyration (2)
+          [22-24] Section directional aspect ratio (3)
         """
         features = []
 
@@ -134,7 +135,7 @@ class FeatureEngineer:
         mean_Iy = float(np.mean(moments_of_inertia_yy)) if moments_of_inertia_yy else 0.0
         inertia_ratio = (sum_Iy / (sum_Ix + 1e-9)) if (sum_Ix > 0.0 or sum_Iy > 0.0) else 0.0
 
-        features.extend([sum_Ix, sum_Iy, mean_Ix, mean_Iy, inertia_ratio])
+        features.extend([sum_Ix, sum_Iy, inertia_ratio])
 
         # --- Derived geometric volumes (diagnostic only) ---
         vol_columns_m3 = calculate_column_geometric_volume(self.column_polygons)
@@ -263,6 +264,8 @@ class FeatureEngineer:
                 "beams_p95_clear_span_x_cm": _p95(spans_x),
                 "beams_p95_clear_span_y_cm": _p95(spans_y),
                 "vol_beams_m3": float(total_beam_volume_m3),
+                "inertia_mean_Ix": mean_Ix,
+                "inertia_mean_Iy": mean_Iy,
                 "mean_radius_gyration_min": mean_r_min,
                 "min_radius_gyration_global": min_r_global,
             }
@@ -289,8 +292,8 @@ class FeatureEngineer:
                 mean_aspect, std_aspect, max_aspect,
             ])
 
-        assert len(features) == 27, (
-            f"Feature count mismatch: expected 27, got {len(features)}. "
+        assert len(features) == 25, (
+            f"Feature count mismatch: expected 25, got {len(features)}. "
             "Update NeuralNetConfig.INPUT_SIZE and feature_names() if features were added/removed."
         )
         return features
@@ -324,11 +327,9 @@ class FeatureEngineer:
             "beams_max_clear_span_y_cm",
             "beams_span_entropy_x",
             "beams_span_entropy_y",
-            # Block 3 — inertia (5)
+            # Block 3 — inertia (3)
             "inertia_sum_Ix",
             "inertia_sum_Iy",
-            "inertia_mean_Ix",
-            "inertia_mean_Iy",
             "inertia_ratio_Iy_over_Ix",
             # Block 4 — compactness (1)
             "columns_mean_compactness",
@@ -364,27 +365,35 @@ def calculate_centroidal_moment_of_inertia(polygon: Polygon) -> tuple[float, flo
     if not polygon.is_valid or polygon.is_empty:
         return (0.0, 0.0)
 
-    # Pega as coordenadas do contorno externo
-    coords = np.array(polygon.exterior.coords)
-    x = coords[:, 0]
-    y = coords[:, 1]
+    # Normalize ring orientation: exterior counterclockwise (positive signed
+    # integrals), holes clockwise (negative signed integrals). Physical inertia
+    # must not depend on the input vertex ordering.
+    normalized = orient(polygon, sign=1.0)
 
-    # Usa a fórmula baseada no Teorema de Green para calcular a inércia em relação à ORIGEM
-    # (x_i * y_{i+1} - x_{i+1} * y_i) é um termo comum
-    a = x[:-1] * y[1:] - x[1:] * y[:-1]
+    def _ring_integrals(coords) -> tuple[float, float, float]:
+        points = np.asarray(coords, dtype=float)
+        x = points[:, 0]
+        y = points[:, 1]
+        cross = x[:-1] * y[1:] - x[1:] * y[:-1]
+        signed_area = 0.5 * float(np.sum(cross))
+        ixx_origin = (1.0 / 12.0) * float(
+            np.sum((y[:-1] ** 2 + y[:-1] * y[1:] + y[1:] ** 2) * cross)
+        )
+        iyy_origin = (1.0 / 12.0) * float(
+            np.sum((x[:-1] ** 2 + x[:-1] * x[1:] + x[1:] ** 2) * cross)
+        )
+        return signed_area, ixx_origin, iyy_origin
 
-    # Cálculo dos momentos de inércia em relação à ORIGEM (0,0)
-    Ixx_origin = (1/12) * np.sum((y[:-1]**2 + y[:-1]*y[1:] + y[1:]**2) * a)
-    Iyy_origin = (1/12) * np.sum((x[:-1]**2 + x[:-1]*x[1:] + x[1:]**2) * a)
-    
-    # Pega a área e o centroide calculados pelo Shapely
-    area = polygon.area
-    centroid = polygon.centroid
-    cx, cy = centroid.x, centroid.y
+    signed_area, ixx_origin, iyy_origin = _ring_integrals(
+        normalized.exterior.coords
+    )
+    for interior in normalized.interiors:
+        hole_area, hole_ixx, hole_iyy = _ring_integrals(interior.coords)
+        signed_area += hole_area
+        ixx_origin += hole_ixx
+        iyy_origin += hole_iyy
 
-    # Usa o Teorema dos Eixos Paralelos para transladar a inércia para o centroide
-    # I_centroid = I_origin - A * d^2
-    Ixx_centroid = Ixx_origin - area * (cy**2)
-    Iyy_centroid = Iyy_origin - area * (cx**2)
-
-    return (Ixx_centroid, Iyy_centroid)
+    centroid = normalized.centroid
+    ixx_centroid = ixx_origin - signed_area * centroid.y**2
+    iyy_centroid = iyy_origin - signed_area * centroid.x**2
+    return float(ixx_centroid), float(iyy_centroid)

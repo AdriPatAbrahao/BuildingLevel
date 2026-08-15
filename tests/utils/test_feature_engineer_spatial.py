@@ -17,7 +17,7 @@ def _features_by_name(columns):
     engineer = FeatureEngineer(columns, [])
     values = engineer.extract_features()
     names = FeatureEngineer.feature_names()
-    assert len(values) == len(names) == 27
+    assert len(values) == len(names) == 25
     return dict(zip(names, values)), engineer.get_spatial_diagnostics()
 
 
@@ -119,3 +119,18 @@ def test_continuous_beam_is_split_into_physical_clear_spans():
     assert diagnostics["beams_mean_clear_span_x_cm"] == pytest.approx(80.0)
     assert diagnostics["beams_p95_clear_span_x_cm"] == pytest.approx(80.0)
     assert diagnostics["vol_beams_m3"] == pytest.approx(0.128)
+
+
+def test_mean_inertias_are_diagnostics_not_model_features():
+    engineer = FeatureEngineer(
+        [_rectangle(360.0, 410.0, 20.0, 100.0)],
+        [],
+    )
+    engineer.extract_features()
+    diagnostics = engineer.get_diagnostics()
+    model_names = set(engineer.feature_names())
+
+    assert diagnostics["inertia_mean_Ix"] > 0.0
+    assert diagnostics["inertia_mean_Iy"] > 0.0
+    assert "inertia_mean_Ix" not in model_names
+    assert "inertia_mean_Iy" not in model_names

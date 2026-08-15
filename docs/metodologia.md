@@ -38,7 +38,7 @@ O processo tem quatro fases principais:
 │  Gerar N variações geométricas → Analisar no TQS → Registrar saídas │
 ├─────────────────────────────────────────────────────────────────────┤
 │  FASE 2 — TREINAMENTO DO MODELO SUBSTITUTO                          │
-│  Extrair 27 features → Normalizar → Treinar DNN → Avaliar           │
+│  Extrair 25 features → Normalizar → Treinar DNN → Avaliar           │
 ├─────────────────────────────────────────────────────────────────────┤
 │  FASE 3 — OTIMIZAÇÃO                                                │
 │  Algoritmo Genético → Consultar DNN (ms) → Minimizar custo          │
@@ -303,7 +303,7 @@ Paralelamente ao rótulo regressivo (aço kgf), cada amostra recebe um rótulo b
 
 A extração de atributos (*features*) transforma a geometria bruta (polígonos e definições de vigas) em um vetor numérico que capture as propriedades estruturalmente relevantes para predição do consumo de aço. Features mal escolhidas podem tornar o modelo incapaz de distinguir edifícios estruturalmente diferentes; features redundantes aumentam a dimensionalidade sem ganho preditivo.
 
-O vetor de features tem **27 dimensões** no esquema v6, organizadas em seis blocos funcionais, descritos a seguir.
+O vetor de features tem **25 dimensões** no esquema v7, organizadas nos blocos funcionais descritos a seguir.
 
 ### 6.2 Bloco 1 — Estatísticas de Área de Pilares (4 features)
 
@@ -341,9 +341,9 @@ vãos_livres = linha_da_viga − união_dos_pilares
 vãos, cargas e rigidezes das vigas modificam os esforços transferidos aos pilares.
 A separação X/Y preserva a interação com a orientação das seções dos pilares.
 
-### 6.4 Bloco 3 — Momentos de Inércia (5 features)
+### 6.4 Bloco 3 — Momentos de Inércia (3 features)
 
-Para cada pilar `i`, os momentos de inércia centroidais `Ixx_i` e `Iyy_i` são calculados via **Teorema de Green** (integração de linha sobre o contorno do polígono), seguido do **Teorema dos Eixos Paralelos** para translação ao centroide:
+Para cada pilar `i`, os momentos de inércia centroidais `Ixx_i` e `Iyy_i` são calculados via **Teorema de Green** (integração de linha sobre o contorno do polígono), seguido do **Teorema dos Eixos Paralelos** para translação ao centroide. Antes da integração, a orientação dos anéis é normalizada: contorno externo anti-horário e vazios internos horários. Assim, o sinal não depende da ordem original dos vértices e os vazios são subtraídos corretamente:
 
 ```
 Ixx_origem = (1/12) × Σ [(y_k² + y_k·y_{k+1} + y_{k+1}²) × (x_k·y_{k+1} − x_{k+1}·y_k)]
@@ -359,11 +359,13 @@ onde `(x̄, ȳ)` é o centroide do polígono (calculado pelo Shapely).
 |---------|---------|---------|
 | `inertia_sum_Ix` | `Σ Ixx_i` | cm⁴ |
 | `inertia_sum_Iy` | `Σ Iyy_i` | cm⁴ |
-| `inertia_mean_Ix` | `mean(Ixx_i)` | cm⁴ |
-| `inertia_mean_Iy` | `mean(Iyy_i)` | cm⁴ |
 | `inertia_ratio_Iy_over_Ix` | `Σ Iyy / (Σ Ixx + ε)` | — |
 
-**Justificativa estrutural:** A inércia da seção transversal determina a rigidez à flexão e é proporcional ao consumo de armadura em regime de flexo-compressão. A razão `Iyy/Ixx` captura a assimetria direcional da rigidez estrutural.
+As médias `mean(Ixx_i)` e `mean(Iyy_i)` são mantidas somente em
+`FeatureEngineer.get_diagnostics()`, pois, com nove pilares fixos, são exatamente
+iguais às somas divididas por nove e não acrescentam informação ao modelo.
+
+**Justificativa estrutural:** A inércia da seção transversal determina a rigidez à flexão e se relaciona com o consumo de armadura em regime de flexo-compressão. A razão `Iyy/Ixx` captura a assimetria direcional da rigidez estrutural.
 
 ### 6.5 Grandezas Derivadas de Vigas (somente diagnóstico)
 
@@ -483,13 +485,13 @@ features de seção.
 ```
 Índices  [0-3]    Área de pilares (4)
          [4-11]   Vãos livres direcionais de vigas (8)
-         [12-16]  Momentos de inércia (5)
-         [17]     Compacidade média (1)
-         [18-19]  Dispersão espacial de área em X e Y (2)
-         [20-21]  Forma das seções (2)
-         [22-23]  Raios de giração direcionais (2)
-         [24-26]  Razão direcional das seções (3)
-         TOTAL: 27 features (schema v6)
+         [12-14]  Momentos de inércia (3)
+         [15]     Compacidade média (1)
+         [16-17]  Dispersão espacial de área em X e Y (2)
+         [18-19]  Forma das seções (2)
+         [20-21]  Raios de giração direcionais (2)
+         [22-24]  Razão direcional das seções (3)
+         TOTAL: 25 features (schema v7)
 ```
 
 ---
@@ -542,15 +544,15 @@ Os escaladores são serializados com `joblib` para o arquivo `feature_pipeline.p
 
 ### 8.1 Tipo de Modelo
 
-**Rede Neural Profunda Densa (DNN — Deep Neural Network)**, implementada em PyTorch. O modelo é um regressor que mapeia o vetor de 27 features do esquema v6 (normalizado) para o consumo de aço normalizado (escalar).
+**Rede Neural Profunda Densa (DNN — Deep Neural Network)**, implementada em PyTorch. O modelo é um regressor que mapeia o vetor de 25 features do esquema v7 (normalizado) para o consumo de aço normalizado (escalar).
 
 ### 8.2 Arquitetura (classe `SimpleNN`)
 
 ```
-Entrada: x ∈ ℝ⁴³ (normalizado)
+Entrada: x ∈ ℝ²⁵ (normalizado)
 
 Camada 1:
-  Linear(27 → 128)
+  Linear(25 → 128)
   BatchNorm1d(128)
   ReLU
   Dropout(p=0.2)
@@ -704,7 +706,7 @@ Cada execução de treinamento cria um diretório autocontido em `outputs/experi
 ├── metadata.json              # Métricas finais e metadados do experimento
 ├── metrics/
 │   ├── epochs.ndjson          # Métricas por época (loss, LR, gradientes)
-│   ├── feature_names.json     # Nomes das 27 features
+│   ├── feature_names.json     # Nomes das 25 features
 │   └── summary.json           # R², MAE, RMSE do teste
 └── plots/
     ├── learning_curves.png
@@ -736,7 +738,7 @@ Para penalizar automaticamente estas configurações, um **classificador binári
 ### 11.2 Treinamento do Classificador
 
 - **Modelo:** Regressão Logística (`sklearn.linear_model.LogisticRegression`, `class_weight='balanced'`, `max_iter=1000`), precedida por um `StandardScaler` no mesmo `Pipeline` (`sklearn.pipeline.make_pipeline`)
-- **Features:** vetor de 27 features, normalizado pelo `StandardScaler` interno do pipeline antes de entrar no classificador
+- **Features:** vetor de 25 features, normalizado pelo `StandardScaler` interno do pipeline antes de entrar no classificador
 - **Split:** 80/20 treino/teste, estratificado por classe (`train_test_split(..., stratify=y, test_size=0.2)`)
 - **Métricas avaliadas:** Acurácia, Precisão, Recall, F1-score, Matriz de Confusão, Curva ROC/AUC
 
@@ -927,7 +929,7 @@ main.py
 │       ├── TQSModelManager.create_building_model_and_elements()
 │       ├── RunModel(building_name) → TQS analisa estrutura
 │       ├── extract_material_summary(RESDES.HTM) → aço kgf, concreto m³
-│       ├── FeatureEngineer.extract_features() → vetor de 27 features
+│       ├── FeatureEngineer.extract_features() → vetor de 25 features
 │       └── Armazenar (features, aço, label_validade)
 │
 ├── 3. Treinamento do Modelo Substituto
@@ -969,7 +971,7 @@ main.py
 
 | Parâmetro | Valor |
 |---|---|
-| `INPUT_SIZE` | 27 |
+| `INPUT_SIZE` | 25 |
 | `HIDDEN_LAYERS` | [128, 128, 64] |
 | `DROPOUT_RATE` | 0,2 |
 | `OUTPUT_SIZE` | 1 |
