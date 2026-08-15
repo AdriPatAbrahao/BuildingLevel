@@ -3,6 +3,8 @@
 import pandas as pd
 import numpy as np
 from config import paths  # Importa seus caminhos configurados
+from config.constants import DEFAULT_BEAM_WIDTH_CM
+from geometry.geometry_utils import GeometryProcessor
 
 class DesignSpace:
     """
@@ -70,8 +72,8 @@ class DesignSpace:
         _drop = [c for c in ('length', 'end_x', 'end_y') if c in self.seed_df.columns]
         self._static_df = self.seed_df.drop(columns=_drop) if _drop else self.seed_df
 
-        # Rectangular column constraint: detect pairs of group variables that share
-        # the same physical node (x, y) but act on different axes (dx vs dy).
+        # Rectangular column constraint: detect orthogonal group pairs whose seed
+        # rectangles physically overlap, including offset starts at outer corners.
         # During geometry reconstruction, only the group with the larger deviation
         # from its initial length is applied; the other is reset to its seed value.
         # This ensures each column node grows in at most one direction at a time,
@@ -92,11 +94,12 @@ class DesignSpace:
 
     def _detect_rect_constraints(self) -> list:
         """
-        Identify pairs of group variables that conflict at the same column node.
+        Identify orthogonal group variables that describe the same seed column.
 
-        Two groups conflict when they share at least one physical node (x, y) AND
-        one group acts exclusively on the x-axis (dx != 0, dy == 0) while the
-        other acts exclusively on the y-axis (dy != 0, dx == 0).
+        Two groups conflict when one acts horizontally, the other vertically,
+        and their physical seed rectangles have a positive overlap area.  This
+        works for both coincident starts and offset starts at external corners.
+        Mere boundary contact is not considered a conflict.
 
         Returns
         -------
@@ -105,41 +108,26 @@ class DesignSpace:
             pair.  For each pair, geometry reconstruction will keep only the group
             with the larger deviation from its initial length.
         """
-        gkey_to_varidx = {gk: i for i, gk in enumerate(self.group_keys)}
-
-        # Classify each group as 'x', 'y', or 'mixed' based on its segment directions.
-        group_axis = {}
-        for gk, idxs in zip(self.group_keys, self.group_indices):
-            dx_vals = self._dx[list(idxs)]
-            dy_vals = self._dy[list(idxs)]
-            if np.any(dx_vals != 0) and np.all(dy_vals == 0):
-                group_axis[gk] = 'x'
-            elif np.any(dy_vals != 0) and np.all(dx_vals == 0):
-                group_axis[gk] = 'y'
-            else:
-                group_axis[gk] = 'mixed'
-
-        # Map each physical node (x, y) to the set of group keys present there.
-        node_to_groups: dict = {}
-        for gk, idxs in zip(self.group_keys, self.group_indices):
-            for row_idx in idxs:
-                node = (self._x[row_idx], self._y[row_idx])
-                node_to_groups.setdefault(node, set()).add(gk)
-
-        # Build the conflict list: x-group paired with y-group at the same node.
-        seen: set = set()
-        constraints = []
-        for node, gkeys in node_to_groups.items():
-            x_groups = [gk for gk in gkeys if group_axis.get(gk) == 'x']
-            y_groups = [gk for gk in gkeys if group_axis.get(gk) == 'y']
-            for xg in x_groups:
-                for yg in y_groups:
-                    pair = (gkey_to_varidx[xg], gkey_to_varidx[yg])
-                    canonical = tuple(sorted(pair))
-                    if canonical not in seen:
-                        seen.add(canonical)
-                        constraints.append(pair)  # (x_var_idx, y_var_idx)
-        return constraints
+        seed_segments = [
+            {
+                "start": (float(self._x[i]), float(self._y[i])),
+                "end": (
+                    float(self._x[i] + self._dx[i] * self._base_lengths[i]),
+                    float(self._y[i] + self._dy[i] * self._base_lengths[i]),
+                ),
+                "group_id": self._group_id_vals[i],
+            }
+            for i in range(len(self._x))
+        ]
+        group_pairs = GeometryProcessor.find_orthogonal_group_pairs(
+            seed_segments,
+            DEFAULT_BEAM_WIDTH_CM,
+        )
+        group_to_variable = {group: i for i, group in enumerate(self.group_keys)}
+        return [
+            (group_to_variable[x_group], group_to_variable[y_group])
+            for x_group, y_group in group_pairs
+        ]
 
     def _apply_rect_constraint(self, lengths: np.ndarray, vector: np.ndarray) -> np.ndarray:
         """

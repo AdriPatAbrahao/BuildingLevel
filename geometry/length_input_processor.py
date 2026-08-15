@@ -244,21 +244,12 @@ class LengthProcessor:
         if variation_strategy == "random":
             # ------------------------------------------------------------------
             # Pre-compute rectangular constraint data from the ORIGINAL segments.
-            # For each physical node (start point), if there is both an x-group
-            # (segments with horizontal direction) and a y-group (vertical), only
+            # If seed rectangles from an x-group and a y-group physically overlap,
+            # including offset starts at an external corner, only
             # the group with the larger deviation from its seed length is allowed
             # to change.  This mirrors the logic in DesignSpace._apply_rect_constraint
             # so that training samples match the geometry seen during optimisation.
             # ------------------------------------------------------------------
-            def _seg_direction(seg):
-                """Normalised (dx, dy) from start→end."""
-                sx, sy = seg["start"]
-                ex, ey = seg["end"]
-                ln = seg.get("length") or 0.0
-                if ln == 0:
-                    return 0.0, 0.0
-                return (ex - sx) / ln, (ey - sy) / ln
-
             # Build group index from original segments
             seed_groups: dict = {}
             for idx, seg in enumerate(segments):
@@ -272,40 +263,10 @@ class LengthProcessor:
                 for gid, idxs in seed_groups.items()
             }
 
-            # Classify each group as x / y / mixed
-            group_axis: dict = {}
-            for gid, idxs in seed_groups.items():
-                dirs = [_seg_direction(segments[i]) for i in idxs]
-                has_x = any(abs(d[0]) > 1e-9 for d in dirs)
-                has_y = any(abs(d[1]) > 1e-9 for d in dirs)
-                all_y_zero = all(abs(d[1]) < 1e-9 for d in dirs)
-                all_x_zero = all(abs(d[0]) < 1e-9 for d in dirs)
-                if has_x and all_y_zero:
-                    group_axis[gid] = 'x'
-                elif has_y and all_x_zero:
-                    group_axis[gid] = 'y'
-                else:
-                    group_axis[gid] = 'mixed'
-
-            # Node (start position) → set of group_ids present there
-            node_to_groups: dict = {}
-            for gid, idxs in seed_groups.items():
-                for i in idxs:
-                    node = segments[i]["start"]
-                    node_to_groups.setdefault(node, set()).add(gid)
-
-            # Conflicting (x-group, y-group) pairs at the same node
-            rect_pairs: list = []
-            seen_pairs: set = set()
-            for node, gkeys in node_to_groups.items():
-                x_grps = [g for g in gkeys if group_axis.get(g) == 'x']
-                y_grps = [g for g in gkeys if group_axis.get(g) == 'y']
-                for xg in x_grps:
-                    for yg in y_grps:
-                        canonical = tuple(sorted([xg, yg]))
-                        if canonical not in seen_pairs:
-                            seen_pairs.add(canonical)
-                            rect_pairs.append((xg, yg))
+            rect_pairs = GeometryProcessor.find_orthogonal_group_pairs(
+                segments,
+                DEFAULT_BEAM_WIDTH_CM,
+            )
 
             # ------------------------------------------------------------------
             # Variation loop — probability raised from 0.4 → 0.7 for better

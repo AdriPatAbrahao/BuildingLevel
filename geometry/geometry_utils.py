@@ -67,6 +67,117 @@ class GeometryProcessor:
             
             rectangles_vertices_list.append(vertices)
         return rectangles_vertices_list
+
+    @staticmethod
+    def find_orthogonal_group_pairs(
+        segments: List[Dict],
+        segment_total_thickness: float,
+        overlap_area_tolerance: float = 1e-9,
+    ) -> List[Tuple[object, object]]:
+        """Find horizontal/vertical variable groups belonging to one column.
+
+        The seed segments that describe a rectangular column do not necessarily
+        have the same start coordinate.  At an external corner, for example, a
+        horizontal segment may start at ``(x, y + t/2)`` while the vertical one
+        starts at ``(x + t/2, y)``.  Comparing raw start coordinates therefore
+        misses a real connection and allows both arms to grow into an L-section.
+
+        This method uses the physical seed rectangles instead.  An x-only group
+        and a y-only group form a conflicting pair when at least one rectangle
+        from each group has a positive overlap area.  Boundary contact alone is
+        intentionally ignored: distinct columns are allowed to touch when the
+        CSV bounds permit it.
+
+        Parameters
+        ----------
+        segments:
+            Seed segments containing ``start``, ``end`` and optionally
+            ``group_id``.
+        segment_total_thickness:
+            Total physical thickness used to turn each centreline into a
+            rectangle.
+        overlap_area_tolerance:
+            Minimum intersection area required to classify two groups as parts
+            of the same seed column.
+
+        Returns
+        -------
+        list[tuple[object, object]]
+            Stable ``(horizontal_group, vertical_group)`` pairs.
+        """
+        if not segments:
+            return []
+        if segment_total_thickness <= 0:
+            raise ValueError("segment_total_thickness must be positive")
+
+        def _group_key(index: int, segment: Dict) -> object:
+            group_id = segment.get("group_id")
+            return group_id if group_id is not None else f"__solo_{index}"
+
+        tolerance = 1e-9
+        group_axes: Dict[object, Set[str]] = {}
+        group_order: List[object] = []
+
+        for index, segment in enumerate(segments):
+            group = _group_key(index, segment)
+            if group not in group_axes:
+                group_axes[group] = set()
+                group_order.append(group)
+
+            start = segment.get("start")
+            end = segment.get("end")
+            if not start or not end:
+                group_axes[group].add("mixed")
+                continue
+
+            delta_x = float(end[0]) - float(start[0])
+            delta_y = float(end[1]) - float(start[1])
+            if abs(delta_x) > tolerance and abs(delta_y) <= tolerance:
+                group_axes[group].add("x")
+            elif abs(delta_y) > tolerance and abs(delta_x) <= tolerance:
+                group_axes[group].add("y")
+            else:
+                group_axes[group].add("mixed")
+
+        axis_by_group = {
+            group: next(iter(axes)) if len(axes) == 1 and "mixed" not in axes else "mixed"
+            for group, axes in group_axes.items()
+        }
+
+        rectangle_vertices = GeometryProcessor.create_rectangles_from_segments(
+            segments,
+            segment_total_thickness / 2.0,
+        )
+        polygons_by_group: Dict[object, List[Polygon]] = {
+            group: [] for group in group_order
+        }
+        for index, vertices in enumerate(rectangle_vertices):
+            if not vertices:
+                continue
+            polygon = Polygon(vertices)
+            if polygon.is_valid and not polygon.is_empty:
+                polygons_by_group[_group_key(index, segments[index])].append(polygon)
+
+        horizontal_groups = [
+            group for group in group_order if axis_by_group.get(group) == "x"
+        ]
+        vertical_groups = [
+            group for group in group_order if axis_by_group.get(group) == "y"
+        ]
+
+        pairs: List[Tuple[object, object]] = []
+        for horizontal_group in horizontal_groups:
+            for vertical_group in vertical_groups:
+                overlaps = any(
+                    horizontal_polygon.intersection(vertical_polygon).area
+                    > overlap_area_tolerance
+                    for horizontal_polygon in polygons_by_group[horizontal_group]
+                    for vertical_polygon in polygons_by_group[vertical_group]
+                )
+                if overlaps:
+                    pairs.append((horizontal_group, vertical_group))
+
+        return pairs
     
     @staticmethod
     def standardize_to_ccw_orientation(polygon: Polygon) -> Polygon:
