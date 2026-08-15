@@ -36,10 +36,10 @@ def simple_length_segments():
     {"start": (10, 0), "end": (10, 200)},   # Parede vertical alinhada com o Pilar 1
     {"start": (80, 50), "end": (180, 50)}  # Parede horizontal alinhada com o Pilar 2
 ])
-def test_process_segments_groups_columns_and_creates_beams(simple_length_segments):
+def test_process_segments_groups_columns_and_requires_two_supports(simple_length_segments):
     """
-    Testa o fluxo principal de process_segments.
-    Verifica se os pilares são agrupados corretamente e se as vigas são geradas.
+    Testa o agrupamento dos pilares e confirma que uma parede com apenas um
+    pilar não é suficiente para definir uma viga.
     """
     processor = LengthProcessor()
     
@@ -58,15 +58,34 @@ def test_process_segments_groups_columns_and_creates_beams(simple_length_segment
     total_area = sum(p.area for p in column_polygons)
     assert np.isclose(total_area, 3000, rtol=0.05), "A área total dos polígonos dos pilares está incorreta"
 
-    # --- Verificação das Vigas ---
-    assert len(beam_groups) == 2, "Deveria criar 2 vigas, uma para cada parede"
-    
-    # Verifica se as vigas foram criadas com os nós corretos (aproximado)
-    # A lógica exata depende de _find_beam_locations, mas podemos checar a orientação
-    beam1 = beam_groups[0]
-    beam2 = beam_groups[1]
-    assert beam1['node_1'][0] == beam1['node_2'][0], "A viga 1 deveria ser vertical"
-    assert beam2['node_1'][1] == beam2['node_2'][1], "A viga 2 deveria ser horizontal"
+    # Há um único pilar em cada parede; uma viga exige dois apoios.
+    assert beam_groups == []
+
+
+@patch('geometry.length_input_processor.VectorConfig.WALL_SEGMENTS', new=[
+    {"start": (10, 0), "end": (10, 200)},
+    {"start": (80, 50), "end": (180, 50)},
+])
+def test_process_segments_creates_beam_between_two_columns_per_wall():
+    """Uma viga é criada quando a mesma parede encontra dois pilares."""
+    segments = [
+        # Dois pilares na parede vertical x=10.
+        {"start": (10, 10), "end": (10, 30), "length": 20, "maxlength": 100, "binary": 1},
+        {"start": (10, 150), "end": (10, 170), "length": 20, "maxlength": 100, "binary": 1},
+        # Dois pilares na parede horizontal y=50.
+        {"start": (90, 50), "end": (110, 50), "length": 20, "maxlength": 100, "binary": 1},
+        {"start": (150, 50), "end": (170, 50), "length": 20, "maxlength": 100, "binary": 1},
+    ]
+
+    processor = LengthProcessor()
+    column_polygons, beam_groups = processor.process_segments(segments)
+
+    assert len(column_polygons) == 4
+    assert len(beam_groups) == 2
+
+    vertical_beam, horizontal_beam = beam_groups
+    assert vertical_beam['node_1'][0] == vertical_beam['node_2'][0] == 10
+    assert horizontal_beam['node_1'][1] == horizontal_beam['node_2'][1] == 50
 
 def test_process_segments_with_empty_input():
     """
@@ -136,4 +155,3 @@ def test_generate_variation_with_no_possible_change():
     
     assert new_segments[0]["length"] == segments[0]["length"]
     assert new_segments[0]["end"] == segments[0]["end"]
-
