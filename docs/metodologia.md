@@ -38,7 +38,7 @@ O processo tem quatro fases principais:
 │  Gerar N variações geométricas → Analisar no TQS → Registrar saídas │
 ├─────────────────────────────────────────────────────────────────────┤
 │  FASE 2 — TREINAMENTO DO MODELO SUBSTITUTO                          │
-│  Extrair 43 features → Normalizar → Treinar DNN → Avaliar           │
+│  Extrair 33 features → Normalizar → Treinar DNN → Avaliar           │
 ├─────────────────────────────────────────────────────────────────────┤
 │  FASE 3 — OTIMIZAÇÃO                                                │
 │  Algoritmo Genético → Consultar DNN (ms) → Minimizar custo          │
@@ -303,22 +303,21 @@ Paralelamente ao rótulo regressivo (aço kgf), cada amostra recebe um rótulo b
 
 A extração de atributos (*features*) transforma a geometria bruta (polígonos e definições de vigas) em um vetor numérico que capture as propriedades estruturalmente relevantes para predição do consumo de aço. Features mal escolhidas podem tornar o modelo incapaz de distinguir edifícios estruturalmente diferentes; features redundantes aumentam a dimensionalidade sem ganho preditivo.
 
-O vetor de features tem **43 dimensões**, organizadas em seis blocos funcionais, descritos a seguir.
+O vetor de features tem **33 dimensões** no esquema v4, organizadas em seis blocos funcionais, descritos a seguir.
 
-### 6.2 Bloco 1 — Estatísticas de Área de Pilares (6 features)
+### 6.2 Bloco 1 — Estatísticas de Área de Pilares (5 features)
 
 Calculadas sobre `A_i = área(polígono_pilar_i)` para todos os `n` pilares:
 
 | Feature | Fórmula | Unidade |
 |---------|---------|---------|
 | `columns_total_area_cm2` | `Σ A_i` | cm² |
-| `columns_count` | `n` | — |
 | `columns_mean_area_cm2` | `Σ A_i / n` | cm² |
 | `columns_std_area_cm2` | `std(A_i)` | cm² |
 | `columns_min_area_cm2` | `min(A_i)` | cm² |
 | `columns_max_area_cm2` | `max(A_i)` | cm² |
 
-**Justificativa estrutural:** A área total da seção transversal correlaciona-se diretamente com a capacidade resistente à compressão dos pilares e com o volume de concreto. A dispersão (std) indica heterogeneidade entre pilares, que influencia a distribuição de esforços.
+**Justificativa estrutural:** A área total da seção transversal correlaciona-se diretamente com a capacidade resistente à compressão dos pilares e com o volume de concreto. A dispersão (std) indica heterogeneidade entre pilares, que influencia a distribuição de esforços. A quantidade de pilares, constante em `n = 9`, é mantida apenas em `FeatureEngineer.get_diagnostics()`.
 
 ### 6.3 Bloco 2 — Estatísticas de Comprimentos Efetivos de Vigas (5 features)
 
@@ -381,78 +380,65 @@ onde `(x̄, ȳ)` é o centroide do polígono (calculado pelo Shapely).
 
 **Justificativa:** A compacidade (`4πA/P²`) atinge máximo 1,0 para círculo e valores menores para seções alongadas. Pilares compactos têm melhor comportamento à compressão centrada; seções alongadas (esbeltez elevada) exigem mais armadura de confinamento.
 
-### 6.7 Bloco 6a — Atributos Espaciais Mantidos (7 features)
+### 6.7 Bloco 6a — Distribuição Espacial com Referência Fixa (2 features)
 
-#### Excentricidade Global Área-Ponderada
+O centro de cargas e as dimensões da planta são entradas explícitas do edifício
+em `BuildingConfig`. Para o edifício atual:
 
-O centroide de massa do layout de pilares é calculado como média ponderada pelas áreas:
-
-```
-x̄_M = Σ(A_i × x_i) / Σ A_i
-ȳ_M = Σ(A_i × y_i) / Σ A_i
-```
-
-A excentricidade global é:
-```
-excentricity_global = Σ [A_i × √((x_i − x̄_M)² + (y_i − ȳ_M)²)]
+```text
+LOAD_CENTER_CM = (360, 410)
+PLAN_WIDTH_CM = 720
+PLAN_LENGTH_CM = 820
 ```
 
-**Justificativa:** Esta métrica captura quão desigualmente distribuída é a massa da estrutura em planta. Alta excentricidade implica concentração de rigidez em uma região, gerando torção estrutural.
+Os pontos de inserção das lajes não são usados como centroides. Para cada
+pilar, definem-se coordenadas adimensionais em relação ao centro de cargas:
 
-#### Razão de Área por Quadrante
-
-O centroide de massa divide a planta em quatro quadrantes. A razão de área no quadrante mais carregado é:
-```
-max_q_area_ratio = max(Σ A_q) / Σ A_i    para q ∈ {1,2,3,4}
-```
-
-**Justificativa:** Assimetria em área de pilares por quadrante indica concentração de rigidez, fator preponderante em análise sísmica e de vento.
-
-#### Esbeltez Geométrica dos Pilares
-
-```
-esbeltez_i = Perímetro_i / √(A_i)
-mean_slenderness = mean(esbeltez_i)
-p95_slenderness  = percentil_95(esbeltez_i)
+```text
+dx_i = (x_i - x_carga) / largura_planta
+dy_i = (y_i - y_carga) / comprimento_planta
 ```
 
-**Justificativa estrutural:** A esbeltez geométrica de pilares (`P/√A`) é proporcional à razão `h/b` da seção e correlaciona-se com a excentricidade de carga e a necessidade de armadura suplementar.
+As duas grandezas que variam no espaço de projeto entram no modelo:
 
-#### Distribuição de Vãos de Vigas
+| Feature de treinamento | Fórmula / significado |
+|------------------------|-----------------------|
+| `column_area_spread_x_norm` | `Σ(A_i dx_i²) / ΣA_i` |
+| `column_area_spread_y_norm` | `Σ(A_i dy_i²) / ΣA_i` |
 
+As seis grandezas constantes pelas restrições de simetria são calculadas por
+`FeatureEngineer.get_spatial_diagnostics()`, mas não entram na rede:
+
+| Métrica de diagnóstico | Fórmula / significado |
+|------------------------|-----------------------|
+| `column_area_offset_x_norm` | `Σ(A_i dx_i) / ΣA_i` |
+| `column_area_offset_y_norm` | `Σ(A_i dy_i) / ΣA_i` |
+| `column_area_coupling_xy_norm` | `Σ(A_i dx_i dy_i) / ΣA_i` |
+| `max_quadrant_area_ratio_fixed` | maior fração de área entre os quatro quadrantes fixos |
+| `stiffness_ecc_x_norm` | `Σ(Iyy_i dx_i) / ΣIyy_i` |
+| `stiffness_ecc_y_norm` | `Σ(Ixx_i dy_i) / ΣIxx_i` |
+
+As áreas dos pilares que cruzam um eixo são divididas geometricamente entre os
+quadrantes, evitando atribuição artificial ao lado positivo. Os deslocamentos
+com sinal detectam desequilíbrio; as dispersões distinguem pilares centrais,
+laterais e de canto; o termo cruzado identifica concentração diagonal. As duas
+últimas métricas auditam o efeito da rotação das seções sobre a rigidez. Caso as
+restrições de simetria sejam alteradas, a seleção de features deve ser revista.
+
+### 6.8 Bloco 6b — Forma da Seção e Vãos (5 features)
+
+As duas métricas `P/√A` descrevem o alongamento geométrico da seção, mas não são
+a esbeltez do elemento `L_e/r`:
+
+```text
+shape_slenderness_i = Perímetro_i / √(A_i)
 ```
-span_max     = max(L_ef_j)
-span_p95     = percentil_95(L_ef_j)
-span_entropy = -Σ [p_k × log(p_k + ε)]   (histograma de vãos)
-```
 
-**Justificativa:** A entropia de vãos captura a homogeneidade da malha estrutural. Um edifício com vãos muito heterogêneos tende a exigir mais armadura nas vigas mais longas, enquanto as mais curtas ficam superdimensionadas.
+Também são mantidos o vão máximo, o percentil 95 e a entropia da distribuição
+dos comprimentos efetivos das vigas. A pertinência final dessas cinco features
+será avaliada por ablação antes da coleta completa.
 
-### 6.8 Bloco 6b — Centro de Rigidez e Excentricidade Estrutural (5 features)
-
-O centro de rigidez (CR) é definido como o ponto em torno do qual a estrutura rotaciona sob carregamento horizontal. Para uma distribuição discreta de pilares:
-
-```
-CR_x = Σ(Iyy_i × x_i) / Σ Iyy_i
-CR_y = Σ(Ixx_i × y_i) / Σ Ixx_i
-```
-
-A excentricidade estrutural é a distância entre CR e o centroide de massa CM:
-```
-ecc_x = CR_x − CM_x
-ecc_y = CR_y − CM_y
-ecc_total = √(ecc_x² + ecc_y²)
-```
-
-| Feature | Significado |
-|---------|-------------|
-| `cs_x, cs_y` | Coordenadas absolutas do centro de rigidez (cm) |
-| `stiffness_ecc_x, stiffness_ecc_y` | Excentricidade estrutural por eixo (cm) |
-| `stiffness_ecc_total` | Excentricidade estrutural total (cm) |
-
-**Justificativa estrutural:** A excentricidade CR–CM é o parâmetro fundamental de análise de torção em estruturas. Quando CR e CM não coincidem, carregamentos horizontais (vento, sismo) induzem torção na estrutura, aumentando significativamente o consumo de armadura nos pilares periféricos.
-
-### 6.9 Bloco 6c — Raio de Giração (4 features)
+### 6.9 Bloco 6c — Raio de Giração Direcional (2 features)
 
 O raio de giração expressa a distribuição da área em relação ao eixo de flexão:
 
@@ -466,12 +452,10 @@ r_min_i = min(r_x_i, r_y_i)
 |---------|---------|
 | `mean_radius_gyration_x` | `mean(r_x_i)` (cm) |
 | `mean_radius_gyration_y` | `mean(r_y_i)` (cm) |
-| `mean_radius_gyration_min` | `mean(r_min_i)` (cm) |
-| `min_radius_gyration_global` | `min(r_min_i)` (cm) |
 
-**Justificativa:** O raio de giração mínimo determina a esbeltez do pilar (`λ = L_ef / r_min`) segundo a NBR 6118. Pilares mais esbeltos exigem dimensionamento à flexo-compressão com segunda ordem, o que eleva o consumo de armadura substancialmente.
+**Justificativa:** Os raios direcionais preservam o efeito da rotação dos pilares. Como todas as seções mantêm uma dimensão mínima de 20 cm, `mean(r_min)` e `min(r_min)` são constantes em aproximadamente `5,7735 cm` e ficam disponíveis apenas como diagnóstico.
 
-### 6.10 Bloco 6d — Razão de Aspecto das Seções (3 features)
+### 6.10 Bloco 6d — Razão Direcional das Seções (3 features)
 
 A razão de aspecto é estimada a partir dos momentos de inércia centroidais:
 
@@ -479,7 +463,9 @@ A razão de aspecto é estimada a partir dos momentos de inércia centroidais:
 aspect_i = √(|Iyy_i| / (|Ixx_i| + ε))
 ```
 
-(Para seção retangular b×h: `Ixx = bh³/12`, `Iyy = hb³/12`, portanto `aspect = h/b`.)
+(Para seção retangular com dimensão `b` em X e `h` em Y: `Ixx = bh³/12`,
+`Iyy = hb³/12`, portanto a fórmula atual retorna `b/h`. Ao girar a seção em
+90°, a razão é invertida, preservando sua orientação.)
 
 | Feature | Fórmula |
 |---------|---------|
@@ -487,46 +473,23 @@ aspect_i = √(|Iyy_i| / (|Ixx_i| + ε))
 | `std_col_aspect_ratio` | `std(aspect_i)` |
 | `max_col_aspect_ratio` | `max(aspect_i)` |
 
-**Justificativa:** A razão de aspecto determina a direcionalidade da rigidez. Pilares com `h >> b` são muito mais rígidos em um eixo que no outro, concentrando esforços horizontais naquela direção.
+**Justificativa:** A razão preserva a direcionalidade da rigidez e, portanto, o
+efeito de girar um pilar. Sua seleção definitiva será discutida na revisão das
+features de seção.
 
-### 6.11 Bloco 6e — Assimetria de Rigidez por Quadrante (1 feature)
-
-Análogo ao `max_q_area_ratio`, mas ponderado pela inércia total de cada pilar:
-
-```
-I_total_i = Ixx_i + Iyy_i
-max_quadrant_inertia_ratio = max(Σ I_total_q) / Σ I_total_i
-```
-
-**Justificativa:** Quantifica a assimetria de distribuição da rigidez lateral em planta, fator determinante para a ocorrência de torção estrutural.
-
-### 6.12 Bloco 6f — Momento Polar de Inércia do Layout (1 feature)
-
-O momento polar de inércia do sistema de pilares em relação ao centroide de massa é:
+### 6.11 Resumo do Vetor de Features
 
 ```
-J_polar = Σ [Ixx_i + Iyy_i + A_i × d_i²]
-```
-
-onde `d_i` é a distância do centroide do pilar `i` ao centroide de massa do layout. O primeiro termo `Ixx_i + Iyy_i` é o momento polar local de cada pilar (Teorema dos Eixos Perpendiculares); o segundo é a contribuição pelo Teorema dos Eixos Paralelos.
-
-**Justificativa estrutural:** `J_polar` é o análogo estrutural ao momento de inércia torsional do layout de pilares. Uma estrutura com `J_polar` elevado é mais resistente à torção global — esta feature captura em um único escalar a interação entre tamanho, forma e distribuição espacial de todos os pilares.
-
-### 6.13 Resumo do Vetor de Features
-
-```
-Índices  [0-5]    Área de pilares (6)
-         [6-10]   Comprimentos efetivos de vigas (5)
-         [11-15]  Momentos de inércia (5)
-         [16-17]  Volumes geométricos (2)
-         [18-21]  Perímetro e compacidade (4)
-         [22-28]  Atributos espaciais: excentricidade, assimetria, esbeltez, vãos (7)
-         [29-33]  Centro de rigidez e excentricidade estrutural (5)
-         [34-37]  Raio de giração (4)
-         [38-40]  Razão de aspecto (3)
-         [41]     Assimetria de inércia por quadrante (1)
-         [42]     Momento polar do layout (1)
-         TOTAL: 43 features
+Índices  [0-4]    Área de pilares (5)
+         [5-9]    Comprimentos efetivos de vigas (5)
+         [10-14]  Momentos de inércia (5)
+         [15-16]  Volumes geométricos (2)
+         [17-20]  Perímetro e compacidade (4)
+         [21-22]  Dispersão espacial de área em X e Y (2)
+         [23-27]  Forma da seção e distribuição de vãos (5)
+         [28-29]  Raios de giração direcionais (2)
+         [30-32]  Razão direcional das seções (3)
+         TOTAL: 33 features (schema v4)
 ```
 
 ---
@@ -579,7 +542,7 @@ Os escaladores são serializados com `joblib` para o arquivo `feature_pipeline.p
 
 ### 8.1 Tipo de Modelo
 
-**Rede Neural Profunda Densa (DNN — Deep Neural Network)**, implementada em PyTorch. O modelo é um regressor que mapeia o vetor de 43 features (normalizado) para o consumo de aço normalizado (escalar).
+**Rede Neural Profunda Densa (DNN — Deep Neural Network)**, implementada em PyTorch. O modelo é um regressor que mapeia o vetor de 33 features do esquema v4 (normalizado) para o consumo de aço normalizado (escalar).
 
 ### 8.2 Arquitetura (classe `SimpleNN`)
 
@@ -587,7 +550,7 @@ Os escaladores são serializados com `joblib` para o arquivo `feature_pipeline.p
 Entrada: x ∈ ℝ⁴³ (normalizado)
 
 Camada 1:
-  Linear(43 → 128)
+  Linear(33 → 128)
   BatchNorm1d(128)
   ReLU
   Dropout(p=0.2)
@@ -741,7 +704,7 @@ Cada execução de treinamento cria um diretório autocontido em `outputs/experi
 ├── metadata.json              # Métricas finais e metadados do experimento
 ├── metrics/
 │   ├── epochs.ndjson          # Métricas por época (loss, LR, gradientes)
-│   ├── feature_names.json     # Nomes das 43 features
+│   ├── feature_names.json     # Nomes das 33 features
 │   └── summary.json           # R², MAE, RMSE do teste
 └── plots/
     ├── learning_curves.png
@@ -773,7 +736,7 @@ Para penalizar automaticamente estas configurações, um **classificador binári
 ### 11.2 Treinamento do Classificador
 
 - **Modelo:** Regressão Logística (`sklearn.linear_model.LogisticRegression`, `class_weight='balanced'`, `max_iter=1000`), precedida por um `StandardScaler` no mesmo `Pipeline` (`sklearn.pipeline.make_pipeline`)
-- **Features:** vetor de 43 features, normalizado pelo `StandardScaler` interno do pipeline antes de entrar no classificador
+- **Features:** vetor de 33 features, normalizado pelo `StandardScaler` interno do pipeline antes de entrar no classificador
 - **Split:** 80/20 treino/teste, estratificado por classe (`train_test_split(..., stratify=y, test_size=0.2)`)
 - **Métricas avaliadas:** Acurácia, Precisão, Recall, F1-score, Matriz de Confusão, Curva ROC/AUC
 
@@ -964,7 +927,7 @@ main.py
 │       ├── TQSModelManager.create_building_model_and_elements()
 │       ├── RunModel(building_name) → TQS analisa estrutura
 │       ├── extract_material_summary(RESDES.HTM) → aço kgf, concreto m³
-│       ├── FeatureEngineer.extract_features() → vetor de 43 features
+│       ├── FeatureEngineer.extract_features() → vetor de 33 features
 │       └── Armazenar (features, aço, label_validade)
 │
 ├── 3. Treinamento do Modelo Substituto
@@ -1006,7 +969,7 @@ main.py
 
 | Parâmetro | Valor |
 |---|---|
-| `INPUT_SIZE` | 43 |
+| `INPUT_SIZE` | 33 |
 | `HIDDEN_LAYERS` | [128, 128, 64] |
 | `DROPOUT_RATE` | 0,2 |
 | `OUTPUT_SIZE` | 1 |

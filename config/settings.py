@@ -6,6 +6,12 @@ class BuildingConfig:
     BUILDING_COORDINATES = constants.DEFAULT_BUILDING_COORDINATES
     SLAB_COORDINATES = constants.DEFAULT_SLAB_COORDINATES
 
+    # Building-specific geometric reference. Review this block when changing
+    # the building; slab insertion points are not slab centroids.
+    LOAD_CENTER_CM = (360.0, 410.0)
+    PLAN_WIDTH_CM = 720.0
+    PLAN_LENGTH_CM = 820.0
+
     TQS_RESULTS_FILE = paths.TQS_OUTPUT_DIR / NAME / "ESPACIAL" / "RESDES.HTM"
     TQS_TIMEOUT_SEC = 120  # segundos esperando pelo RESDES.HTM no modo single-thread
 
@@ -37,7 +43,8 @@ class RunConfig:
 class NeuralNetConfig:
     """ Hiperparâmetros e arquitetura da Rede Neural. """
     # --- Arquitetura ---
-    INPUT_SIZE = 43  # Número de features extraídas pelo FeatureEngineer atual
+    INPUT_SIZE = 33  # Número de features extraídas pelo FeatureEngineer atual
+    FEATURE_SCHEMA_VERSION = 4
     HIDDEN_LAYERS = [128, 128, 64]
     DROPOUT_RATE = 0.2
     OUTPUT_SIZE = 1

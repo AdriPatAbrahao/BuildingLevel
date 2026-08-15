@@ -1,8 +1,9 @@
 
 from typing import List, Dict
-from shapely.geometry import Polygon, LineString, MultiLineString
+from shapely.geometry import Polygon, LineString, MultiLineString, box
 import numpy as np
 from config.constants import DEFAULT_BEAM_WIDTH_CM, DEFAULT_BEAM_HEIGHT_CM
+from config.settings import BuildingConfig
 from utils.geometric_calculator import (
     calculate_column_geometric_volume,
     calculate_beams_geometric_volume,
@@ -15,28 +16,27 @@ class FeatureEngineer:
     def __init__(self, column_polygons: List[Polygon], beam_definitions: List[Dict]):
         self.column_polygons = column_polygons
         self.beam_definitions = beam_definitions
+        self._spatial_diagnostics: Dict[str, float] = {}
+        self._constant_diagnostics: Dict[str, float] = {}
 
     def extract_features(self) -> List[float]:
         """
         Computes all engineered features and returns them as a single vector.
 
-        Feature layout (43 total):
-          [0-5]   Column area stats (6)
-          [6-10]  Beam effective-length stats (5)
-          [11-15] Inertia (sum_Ix, sum_Iy, mean_Ix, mean_Iy, ratio) (5)
-          [16-17] Geometric volumes — columns, beams (2)
-          [18-21] Column perimeter / compactness (4)
-          [22-28] Spatial kept: excentricity, quadrant-area-ratio, slenderness×2, span×3 (7)
-          [29-43] NEW structural features (14):
-                  CS_x, CS_y, ecc_x, ecc_y, ecc_total (5)
-                  mean_rx, mean_ry, mean_r_min, min_r_global (4)
-                  mean_aspect, std_aspect, max_aspect (3)
-                  max_quadrant_inertia_ratio (1)
-                  J_polar_layout (1)
+        Feature layout (33 total, schema v4):
+          [0-4]   Column area stats (5; constant count is diagnostic only)
+          [5-9]   Beam effective-length stats (5)
+          [10-14] Inertia (sum_Ix, sum_Iy, mean_Ix, mean_Iy, ratio) (5)
+          [15-16] Geometric volumes — columns, beams (2)
+          [17-20] Column perimeter / compactness (4)
+          [21-22] Fixed-reference area spread in X and Y (2)
+          [23-27] Section-shape and beam-span descriptors (5)
+          [28-29] Directional radius of gyration (2)
+          [30-32] Section directional aspect ratio (3)
         """
         features = []
 
-        # --- Block 1: Column area features (6) ---
+        # --- Block 1: Column area features (5; count is diagnostic) ---
         col_areas = np.array([p.area for p in self.column_polygons], dtype=float)
         num_columns = len(self.column_polygons)
         if col_areas.size > 0:
@@ -49,7 +49,7 @@ class FeatureEngineer:
             total_column_area = mean_col_area = std_col_area = min_col_area = max_col_area = 0.0
 
         features.extend([
-            total_column_area, num_columns, mean_col_area,
+            total_column_area, mean_col_area,
             std_col_area, min_col_area, max_col_area,
         ])
 
@@ -128,7 +128,7 @@ class FeatureEngineer:
             float(np.mean(compact)) if compact  else 0.0,
         ])
 
-        # --- Block 6: Spatial + structural features (21) ---
+        # --- Block 6: Spatial + structural features (14) ---
         if self.column_polygons:
             _cg         = [p.centroid for p in self.column_polygons]
             centroids_np = np.array([(float(c.x), float(c.y)) for c in _cg], dtype=float)
@@ -137,30 +137,49 @@ class FeatureEngineer:
             ixx_arr      = np.array(moments_of_inertia_xx, dtype=float)
             iyy_arr      = np.array(moments_of_inertia_yy, dtype=float)
 
-            # Area-weighted centroid (center of mass) — structurally correct reference
-            # for eccentricity and J_polar.  Simple mean would give wrong results when
-            # columns have different cross-section sizes.
             _total_area = float(areas_np.sum())
+            load_center_x, load_center_y = map(float, BuildingConfig.LOAD_CENTER_CM)
+            plan_width = float(BuildingConfig.PLAN_WIDTH_CM)
+            plan_length = float(BuildingConfig.PLAN_LENGTH_CM)
+            if plan_width <= 0 or plan_length <= 0:
+                raise ValueError("Building plan dimensions must be positive.")
+
+            # Dimensionless coordinates relative to the fixed center of loads.
+            # LOAD_CENTER_CM and plan dimensions are explicit building inputs;
+            # slab insertion points are deliberately not used as centroids.
+            dx = (centroids_np[:, 0] - load_center_x) / plan_width
+            dy = (centroids_np[:, 1] - load_center_y) / plan_length
+
             if _total_area > 0:
-                cx = float(np.sum(areas_np * centroids_np[:, 0]) / _total_area)
-                cy = float(np.sum(areas_np * centroids_np[:, 1]) / _total_area)
+                area_offset_x = float(np.sum(areas_np * dx) / _total_area)
+                area_offset_y = float(np.sum(areas_np * dy) / _total_area)
+                area_spread_x = float(np.sum(areas_np * dx**2) / _total_area)
+                area_spread_y = float(np.sum(areas_np * dy**2) / _total_area)
+                area_coupling_xy = float(np.sum(areas_np * dx * dy) / _total_area)
             else:
-                cx = float(centroids_np[:, 0].mean())
-                cy = float(centroids_np[:, 1].mean())
-            dists = np.sqrt((centroids_np[:, 0] - cx)**2 + (centroids_np[:, 1] - cy)**2)
+                area_offset_x = area_offset_y = 0.0
+                area_spread_x = area_spread_y = area_coupling_xy = 0.0
 
-            # Kept: area-weighted eccentricity
-            excentricity_global = float(np.sum(areas_np * dists))
-
-            # Kept: quadrant area asymmetry
-            xc    = centroids_np[:, 0]
-            yc    = centroids_np[:, 1]
-            q_idx = np.where(xc >= cx,
-                             np.where(yc >= cy, 0, 3),
-                             np.where(yc >= cy, 1, 2))
-            q_areas         = [float(np.sum(areas_np[q_idx == q])) for q in range(4)]
-            total_area      = float(areas_np.sum())
-            max_q_area_ratio = float(max(q_areas)) / total_area if total_area > 0 else 0.0
+            # Fixed quadrants: intersect the actual polygons instead of assigning
+            # each whole pillar by its centroid. A pillar crossing an axis is thus
+            # split between adjacent quadrants without a positive-side bias.
+            min_x = min(p.bounds[0] for p in self.column_polygons) - 1.0
+            min_y = min(p.bounds[1] for p in self.column_polygons) - 1.0
+            max_x = max(p.bounds[2] for p in self.column_polygons) + 1.0
+            max_y = max(p.bounds[3] for p in self.column_polygons) + 1.0
+            quadrant_polygons = (
+                box(load_center_x, load_center_y, max_x, max_y),
+                box(min_x, load_center_y, load_center_x, max_y),
+                box(min_x, min_y, load_center_x, load_center_y),
+                box(load_center_x, min_y, max_x, load_center_y),
+            )
+            q_areas = [
+                float(sum(p.intersection(quadrant).area for p in self.column_polygons))
+                for quadrant in quadrant_polygons
+            ]
+            max_q_area_ratio_fixed = (
+                float(max(q_areas)) / _total_area if _total_area > 0 else 0.0
+            )
 
             # Kept: geometric slenderness
             valid_mask = areas_np > 0
@@ -182,16 +201,28 @@ class FeatureEngineer:
             else:
                 span_entropy = 0.0
 
-            # NEW: Center of stiffness and structural eccentricity
-            # CS_x resists lateral displacement in X → weighted by Iyy (bending about Y-axis)
-            # CS_y resists lateral displacement in Y → weighted by Ixx (bending about X-axis)
+            # Signed stiffness eccentricities relative to the fixed load center.
+            # X resistance is weighted by Iyy; Y resistance is weighted by Ixx.
             sum_Iyy = float(iyy_arr.sum())
             sum_Ixx = float(ixx_arr.sum())
-            CS_x = float(np.sum(iyy_arr * centroids_np[:, 0])) / sum_Iyy if sum_Iyy > 0 else cx
-            CS_y = float(np.sum(ixx_arr * centroids_np[:, 1])) / sum_Ixx if sum_Ixx > 0 else cy
-            ecc_x     = CS_x - cx
-            ecc_y     = CS_y - cy
-            ecc_total = float(np.sqrt(ecc_x**2 + ecc_y**2))
+            stiffness_ecc_x = (
+                float(np.sum(iyy_arr * dx)) / sum_Iyy if sum_Iyy > 0 else 0.0
+            )
+            stiffness_ecc_y = (
+                float(np.sum(ixx_arr * dy)) / sum_Ixx if sum_Ixx > 0 else 0.0
+            )
+
+            # These six quantities are structural diagnostics for the current
+            # symmetry constraints. They are intentionally excluded from the
+            # learning vector because they are constant over this design space.
+            self._spatial_diagnostics = {
+                "column_area_offset_x_norm": area_offset_x,
+                "column_area_offset_y_norm": area_offset_y,
+                "column_area_coupling_xy_norm": area_coupling_xy,
+                "max_quadrant_area_ratio_fixed": max_q_area_ratio_fixed,
+                "stiffness_ecc_x_norm": stiffness_ecc_x,
+                "stiffness_ecc_y_norm": stiffness_ecc_y,
+            }
 
             # NEW: Radius of gyration r = sqrt(I/A) — determines structural slenderness
             rx_list, ry_list, r_min_list = [], [], []
@@ -206,6 +237,11 @@ class FeatureEngineer:
             mean_ry      = float(np.mean(ry_list))    if ry_list    else 0.0
             mean_r_min   = float(np.mean(r_min_list)) if r_min_list else 0.0
             min_r_global = float(np.min(r_min_list))  if r_min_list else 0.0
+            self._constant_diagnostics = {
+                "columns_count": float(num_columns),
+                "mean_radius_gyration_min": mean_r_min,
+                "min_radius_gyration_global": min_r_global,
+            }
 
             # NEW: Column aspect ratio h/b ≈ sqrt(Iyy/Ixx) — captures section directionality
             aspect_list = [
@@ -216,50 +252,45 @@ class FeatureEngineer:
             std_aspect  = float(np.std(aspect_list))  if aspect_list else 0.0
             max_aspect  = float(np.max(aspect_list))  if aspect_list else 1.0
 
-            # NEW: Quadrant inertia asymmetry (stiffness-based, not area-based)
-            total_I_per_col           = ixx_arr + iyy_arr
-            total_I                   = float(total_I_per_col.sum())
-            q_inertia                 = [float(np.sum(total_I_per_col[q_idx == q])) for q in range(4)]
-            max_quadrant_inertia_ratio = float(max(q_inertia)) / total_I if total_I > 0 else 0.25
-
-            # NEW: Polar moment of inertia of layout — torsional stiffness proxy
-            # J = Σ(Ixx_i + Iyy_i + A_i·d_i²)  includes parallel-axis theorem term
-            J_polar = float(np.sum(ixx_arr + iyy_arr + areas_np * dists**2))
-
             features.extend([
-                # --- kept spatial (7) ---
-                excentricity_global,
-                max_q_area_ratio,
+                # --- variable fixed-reference spatial distribution (2) ---
+                area_spread_x,
+                area_spread_y,
+                # --- section shape and beam spans (5) ---
                 mean_slenderness,
                 p95_slenderness,
                 span_max,
                 span_p95,
                 span_entropy,
-                # --- new: center of stiffness + eccentricity (5) ---
-                CS_x, CS_y,
-                ecc_x, ecc_y, ecc_total,
-                # --- new: radius of gyration (4) ---
-                mean_rx, mean_ry, mean_r_min, min_r_global,
-                # --- new: aspect ratio (3) ---
+                # --- directional radius of gyration (2) ---
+                mean_rx, mean_ry,
+                # --- directional aspect ratio (3) ---
                 mean_aspect, std_aspect, max_aspect,
-                # --- new: stiffness asymmetry (1) ---
-                max_quadrant_inertia_ratio,
-                # --- new: torsional stiffness proxy (1) ---
-                J_polar,
             ])
 
-        assert len(features) == 43, (
-            f"Feature count mismatch: expected 43, got {len(features)}. "
+        assert len(features) == 33, (
+            f"Feature count mismatch: expected 33, got {len(features)}. "
             "Update NeuralNetConfig.INPUT_SIZE and feature_names() if features were added/removed."
         )
         return features
 
+    def get_spatial_diagnostics(self) -> Dict[str, float]:
+        """Return fixed-reference symmetry metrics excluded from model input."""
+        if not self._spatial_diagnostics:
+            self.extract_features()
+        return dict(self._spatial_diagnostics)
+
+    def get_diagnostics(self) -> Dict[str, float]:
+        """Return all metrics excluded from model input by design."""
+        if not self._spatial_diagnostics or not self._constant_diagnostics:
+            self.extract_features()
+        return {**self._spatial_diagnostics, **self._constant_diagnostics}
+
     @staticmethod
     def feature_names() -> List[str]:
         base = [
-            # Block 1 — column area stats (6)
+            # Block 1 — column area stats (5)
             "columns_total_area_cm2",
-            "columns_count",
             "columns_mean_area_cm2",
             "columns_std_area_cm2",
             "columns_min_area_cm2",
@@ -286,33 +317,22 @@ class FeatureEngineer:
             "columns_mean_compactness",
         ]
         spatial = [
-            # Block 6a — kept spatial (7)
-            "pillars_excentricity_global",
-            "pillars_max_quadrant_area_ratio",
+            # Block 6a — variable fixed-reference spatial distribution (2)
+            "column_area_spread_x_norm",
+            "column_area_spread_y_norm",
+            # Block 6b — section shape and beam spans (5)
             "pillars_mean_slenderness",
             "pillars_p95_slenderness",
             "beams_span_max_cm",
             "beams_span_p95_cm",
             "beams_span_entropy",
-            # Block 6b — center of stiffness + eccentricity (5)
-            "cs_x",
-            "cs_y",
-            "stiffness_ecc_x",
-            "stiffness_ecc_y",
-            "stiffness_ecc_total",
-            # Block 6c — radius of gyration (4)
+            # Block 6c — directional radius of gyration (2)
             "mean_radius_gyration_x",
             "mean_radius_gyration_y",
-            "mean_radius_gyration_min",
-            "min_radius_gyration_global",
-            # Block 6d — column aspect ratio (3)
+            # Block 6d — directional column aspect ratio (3)
             "mean_col_aspect_ratio",
             "std_col_aspect_ratio",
             "max_col_aspect_ratio",
-            # Block 6e — stiffness asymmetry (1)
-            "max_quadrant_inertia_ratio",
-            # Block 6f — torsional stiffness proxy (1)
-            "J_polar_layout",
         ]
         return base + spatial
     

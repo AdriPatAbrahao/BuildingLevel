@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -36,6 +37,7 @@ def test_checkpoint_round_trip_preserves_collection_state(tmp_path):
     restored = optimizer._restore_collection_state(checkpoint)
 
     assert checkpoint["checkpoint_version"] == 3
+    assert checkpoint["feature_schema_version"] == 4
     assert checkpoint["python_random_state"]
     assert restored[:4] == ([[3.0, 4.0]], [[1200.0]], 1, 7)
     assert restored[4] is True
@@ -50,4 +52,16 @@ def test_checkpoint_resume_rejects_changed_seed(tmp_path):
     seed.write_text("changed-seed", encoding="utf-8")
 
     with pytest.raises(RuntimeError, match="seed differs"):
+        optimizer._load_checkpoint()
+
+
+def test_checkpoint_resume_rejects_changed_feature_schema(tmp_path):
+    optimizer, _ = _optimizer_stub(tmp_path)
+    optimizer._save_checkpoint([], [], 0)
+    checkpoint_path = tmp_path / "checkpoint.json"
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    checkpoint["feature_schema_version"] = 1
+    checkpoint_path.write_text(json.dumps(checkpoint), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="feature schema differs"):
         optimizer._load_checkpoint()

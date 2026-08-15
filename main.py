@@ -905,6 +905,7 @@ class BuildingOptimizer:
         seed_path = Path(self.length_processor.csv_path).resolve()
         obj = {
             'checkpoint_version': 3,
+            'feature_schema_version': int(NeuralNetConfig.FEATURE_SCHEMA_VERSION),
             'timestamp': time.time(),
             'current_iteration': (
                 self.current_iteration
@@ -952,6 +953,14 @@ class BuildingOptimizer:
                     "Checkpoint seed differs from the current seed CSV; "
                     "resume aborted."
                 )
+        stored_feature_schema = checkpoint.get('feature_schema_version')
+        current_feature_schema = int(NeuralNetConfig.FEATURE_SCHEMA_VERSION)
+        if stored_feature_schema != current_feature_schema:
+            raise RuntimeError(
+                "Checkpoint feature schema differs from the current extractor "
+                f"(checkpoint={stored_feature_schema!r}, current={current_feature_schema}); "
+                "resume aborted."
+            )
         return checkpoint
 
     def _restore_collection_state(self, checkpoint: Dict):
