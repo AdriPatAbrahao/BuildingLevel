@@ -17,7 +17,7 @@ def _features_by_name(columns):
     engineer = FeatureEngineer(columns, [])
     values = engineer.extract_features()
     names = FeatureEngineer.feature_names()
-    assert len(values) == len(names) == 25
+    assert len(values) == len(names) == 21
     return dict(zip(names, values)), engineer.get_spatial_diagnostics()
 
 
@@ -109,8 +109,8 @@ def test_continuous_beam_is_split_into_physical_clear_spans():
     features = dict(zip(engineer.feature_names(), engineer.extract_features()))
     diagnostics = engineer.get_diagnostics()
 
-    assert features["beams_total_clear_length_x_cm"] == pytest.approx(160.0)
-    assert features["beams_total_clear_length_y_cm"] == pytest.approx(0.0)
+    assert diagnostics["beams_total_clear_length_x_cm"] == pytest.approx(160.0)
+    assert diagnostics["beams_total_clear_length_y_cm"] == pytest.approx(0.0)
     assert features["beams_std_clear_span_x_cm"] == pytest.approx(0.0)
     assert features["beams_max_clear_span_x_cm"] == pytest.approx(80.0)
     assert diagnostics["beam_definition_count"] == pytest.approx(1.0)
@@ -119,6 +119,38 @@ def test_continuous_beam_is_split_into_physical_clear_spans():
     assert diagnostics["beams_mean_clear_span_x_cm"] == pytest.approx(80.0)
     assert diagnostics["beams_p95_clear_span_x_cm"] == pytest.approx(80.0)
     assert diagnostics["vol_beams_m3"] == pytest.approx(0.128)
+
+
+def test_radius_balance_preserves_section_direction_without_redundant_means():
+    vertical_features, _ = _features_by_name(
+        [_rectangle(360.0, 410.0, 20.0, 100.0)]
+    )
+    horizontal_features, _ = _features_by_name(
+        [_rectangle(360.0, 410.0, 100.0, 20.0)]
+    )
+    name = "columns_mean_radius_gyration_directional_balance"
+
+    assert vertical_features[name] == pytest.approx(-2.0 / 3.0)
+    assert horizontal_features[name] == pytest.approx(2.0 / 3.0)
+
+
+def test_redundant_beam_totals_and_mean_radii_are_diagnostics_only():
+    engineer = FeatureEngineer(
+        [_rectangle(360.0, 410.0, 20.0, 100.0)],
+        [],
+    )
+    engineer.extract_features()
+    diagnostics = engineer.get_diagnostics()
+    model_names = set(engineer.feature_names())
+
+    for name in (
+        "beams_total_clear_length_x_cm",
+        "beams_total_clear_length_y_cm",
+        "mean_radius_gyration_x",
+        "mean_radius_gyration_y",
+    ):
+        assert name in diagnostics
+        assert name not in model_names
 
 
 def test_mean_inertias_are_diagnostics_not_model_features():
@@ -134,3 +166,20 @@ def test_mean_inertias_are_diagnostics_not_model_features():
     assert diagnostics["inertia_mean_Iy"] > 0.0
     assert "inertia_mean_Ix" not in model_names
     assert "inertia_mean_Iy" not in model_names
+
+
+def test_compactness_is_diagnostic_and_shape_factors_are_named_correctly():
+    engineer = FeatureEngineer(
+        [_rectangle(360.0, 410.0, 20.0, 100.0)],
+        [],
+    )
+    engineer.extract_features()
+    diagnostics = engineer.get_diagnostics()
+    model_names = set(engineer.feature_names())
+
+    assert diagnostics["columns_mean_compactness"] > 0.0
+    assert "columns_mean_compactness" not in model_names
+    assert "columns_mean_shape_factor" in model_names
+    assert "columns_p95_shape_factor" in model_names
+    assert "pillars_mean_slenderness" not in model_names
+    assert "pillars_p95_slenderness" not in model_names

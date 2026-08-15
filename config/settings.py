@@ -43,8 +43,8 @@ class RunConfig:
 class NeuralNetConfig:
     """ Hiperparâmetros e arquitetura da Rede Neural. """
     # --- Arquitetura ---
-    INPUT_SIZE = 25  # Número de features extraídas pelo FeatureEngineer atual
-    FEATURE_SCHEMA_VERSION = 7
+    INPUT_SIZE = 21  # Número de features extraídas pelo FeatureEngineer atual
+    FEATURE_SCHEMA_VERSION = 9
     HIDDEN_LAYERS = [128, 128, 64]
     DROPOUT_RATE = 0.2
     OUTPUT_SIZE = 1

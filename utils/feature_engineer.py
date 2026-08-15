@@ -24,15 +24,14 @@ class FeatureEngineer:
         """
         Computes all engineered features and returns them as a single vector.
 
-        Feature layout (25 total, schema v7):
+        Feature layout (21 total, schema v9):
           [0-3]   Non-redundant column area stats (4)
-          [4-11]  Physical clear-span stats separated into X and Y (8)
-          [12-14] Inertia (sum_Ix, sum_Iy, ratio) (3)
-          [15]    Mean column compactness (1)
-          [16-17] Fixed-reference area spread in X and Y (2)
-          [18-19] Section-shape descriptors (2)
-          [20-21] Directional radius of gyration (2)
-          [22-24] Section directional aspect ratio (3)
+          [4-9]   Non-redundant clear-span stats separated into X and Y (6)
+          [10-12] Inertia (sum_Ix, sum_Iy, ratio) (3)
+          [13-14] Fixed-reference area spread in X and Y (2)
+          [15-16] Section-shape factors (2)
+          [17]    Mean directional radius-of-gyration balance (1)
+          [18-20] Section directional aspect ratio (3)
         """
         features = []
 
@@ -52,7 +51,7 @@ class FeatureEngineer:
             total_column_area, std_col_area, min_col_area, max_col_area,
         ])
 
-        # --- Block 2: Physical clear-span features by direction (8) ---
+        # --- Block 2: Non-redundant physical clear-span features (6) ---
         beam_lines = [LineString([b['node_1'], b['node_2']]) for b in self.beam_definitions]
 
         column_union = unary_union(self.column_polygons)
@@ -106,8 +105,6 @@ class FeatureEngineer:
         total_beam_volume_m3 = (total_eff_beam_length * CM_TO_M) * beam_width_m * beam_height_m
 
         features.extend([
-            total_x,
-            total_y,
             _std(spans_x),
             _std(spans_y),
             _max(spans_x),
@@ -116,7 +113,7 @@ class FeatureEngineer:
             _span_entropy(spans_y),
         ])
 
-        # --- Block 3: Inertia features (5) ---
+        # --- Block 3: Inertia features (3) ---
         moments_of_inertia_xx = []
         moments_of_inertia_yy = []
         for p in self.column_polygons:
@@ -140,7 +137,7 @@ class FeatureEngineer:
         # --- Derived geometric volumes (diagnostic only) ---
         vol_columns_m3 = calculate_column_geometric_volume(self.column_polygons)
 
-        # --- Block 5: Column compactness (perimeter stats are diagnostic) ---
+        # --- Column compactness and perimeter stats (diagnostic only) ---
         perims = [p.length for p in self.column_polygons]
         compact = [
             float(4.0 * np.pi * p.area / (p.length * p.length))
@@ -149,7 +146,7 @@ class FeatureEngineer:
         total_perimeter = float(np.sum(perims)) if perims else 0.0
         mean_perimeter = float(np.mean(perims)) if perims else 0.0
         std_perimeter = float(np.std(perims)) if perims else 0.0
-        features.append(float(np.mean(compact)) if compact else 0.0)
+        mean_compactness = float(np.mean(compact)) if compact else 0.0
 
         # --- Block 6: Spatial + structural features (14) ---
         if self.column_polygons:
@@ -204,14 +201,15 @@ class FeatureEngineer:
                 float(max(q_areas)) / _total_area if _total_area > 0 else 0.0
             )
 
-            # Kept: geometric slenderness
+            # Dimensionless section-shape factor P/sqrt(A). This is not the
+            # member slenderness L_e/r used in structural verification.
             valid_mask = areas_np > 0
             if valid_mask.any():
-                slend            = perims_np[valid_mask] / np.sqrt(areas_np[valid_mask])
-                mean_slenderness = float(slend.mean())
-                p95_slenderness  = float(np.percentile(slend, 95))
+                shape_factors = perims_np[valid_mask] / np.sqrt(areas_np[valid_mask])
+                mean_shape_factor = float(shape_factors.mean())
+                p95_shape_factor = float(np.percentile(shape_factors, 95))
             else:
-                mean_slenderness = p95_slenderness = 0.0
+                mean_shape_factor = p95_shape_factor = 0.0
 
             # Signed stiffness eccentricities relative to the fixed load center.
             # X resistance is weighted by Iyy; Y resistance is weighted by Ixx.
@@ -249,6 +247,10 @@ class FeatureEngineer:
             mean_ry      = float(np.mean(ry_list))    if ry_list    else 0.0
             mean_r_min   = float(np.mean(r_min_list)) if r_min_list else 0.0
             min_r_global = float(np.min(r_min_list))  if r_min_list else 0.0
+            radius_sum = mean_rx + mean_ry
+            directional_radius_balance = (
+                (mean_ry - mean_rx) / radius_sum if radius_sum > 0.0 else 0.0
+            )
             self._non_model_diagnostics = {
                 "columns_count": float(num_columns),
                 "columns_mean_area_cm2": mean_col_area,
@@ -256,9 +258,12 @@ class FeatureEngineer:
                 "columns_total_perimeter_cm": total_perimeter,
                 "columns_mean_perimeter_cm": mean_perimeter,
                 "columns_std_perimeter_cm": std_perimeter,
+                "columns_mean_compactness": mean_compactness,
                 "beam_definition_count": float(len(beam_lines)),
                 "clear_span_count_x": float(len(spans_x)),
                 "clear_span_count_y": float(len(spans_y)),
+                "beams_total_clear_length_x_cm": total_x,
+                "beams_total_clear_length_y_cm": total_y,
                 "beams_mean_clear_span_x_cm": _mean(spans_x),
                 "beams_mean_clear_span_y_cm": _mean(spans_y),
                 "beams_p95_clear_span_x_cm": _p95(spans_x),
@@ -266,6 +271,8 @@ class FeatureEngineer:
                 "vol_beams_m3": float(total_beam_volume_m3),
                 "inertia_mean_Ix": mean_Ix,
                 "inertia_mean_Iy": mean_Iy,
+                "mean_radius_gyration_x": mean_rx,
+                "mean_radius_gyration_y": mean_ry,
                 "mean_radius_gyration_min": mean_r_min,
                 "min_radius_gyration_global": min_r_global,
             }
@@ -283,17 +290,17 @@ class FeatureEngineer:
                 # --- variable fixed-reference spatial distribution (2) ---
                 area_spread_x,
                 area_spread_y,
-                # --- section shape (2) ---
-                mean_slenderness,
-                p95_slenderness,
-                # --- directional radius of gyration (2) ---
-                mean_rx, mean_ry,
+                # --- dimensionless section-shape factors (2) ---
+                mean_shape_factor,
+                p95_shape_factor,
+                # --- normalized mean directional radius balance (1) ---
+                directional_radius_balance,
                 # --- directional aspect ratio (3) ---
                 mean_aspect, std_aspect, max_aspect,
             ])
 
-        assert len(features) == 25, (
-            f"Feature count mismatch: expected 25, got {len(features)}. "
+        assert len(features) == 21, (
+            f"Feature count mismatch: expected 21, got {len(features)}. "
             "Update NeuralNetConfig.INPUT_SIZE and feature_names() if features were added/removed."
         )
         return features
@@ -318,9 +325,7 @@ class FeatureEngineer:
             "columns_std_area_cm2",
             "columns_min_area_cm2",
             "columns_max_area_cm2",
-            # Block 2 — physical clear-span stats by direction (8)
-            "beams_total_clear_length_x_cm",
-            "beams_total_clear_length_y_cm",
+            # Block 2 — non-redundant physical clear-span stats (6)
             "beams_std_clear_span_x_cm",
             "beams_std_clear_span_y_cm",
             "beams_max_clear_span_x_cm",
@@ -331,20 +336,17 @@ class FeatureEngineer:
             "inertia_sum_Ix",
             "inertia_sum_Iy",
             "inertia_ratio_Iy_over_Ix",
-            # Block 4 — compactness (1)
-            "columns_mean_compactness",
         ]
         spatial = [
-            # Block 6a — variable fixed-reference spatial distribution (2)
+            # Block 4 — variable fixed-reference spatial distribution (2)
             "column_area_spread_x_norm",
             "column_area_spread_y_norm",
-            # Block 6b — section shape (2)
-            "pillars_mean_slenderness",
-            "pillars_p95_slenderness",
-            # Block 6c — directional radius of gyration (2)
-            "mean_radius_gyration_x",
-            "mean_radius_gyration_y",
-            # Block 6d — directional column aspect ratio (3)
+            # Block 5 — dimensionless section-shape factors P/sqrt(A) (2)
+            "columns_mean_shape_factor",
+            "columns_p95_shape_factor",
+            # Block 6 — normalized mean directional radius balance (1)
+            "columns_mean_radius_gyration_directional_balance",
+            # Block 7 — directional column aspect ratio (3)
             "mean_col_aspect_ratio",
             "std_col_aspect_ratio",
             "max_col_aspect_ratio",

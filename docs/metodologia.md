@@ -38,7 +38,7 @@ O processo tem quatro fases principais:
 │  Gerar N variações geométricas → Analisar no TQS → Registrar saídas │
 ├─────────────────────────────────────────────────────────────────────┤
 │  FASE 2 — TREINAMENTO DO MODELO SUBSTITUTO                          │
-│  Extrair 25 features → Normalizar → Treinar DNN → Avaliar           │
+│  Extrair 21 features → Normalizar → Treinar DNN → Avaliar           │
 ├─────────────────────────────────────────────────────────────────────┤
 │  FASE 3 — OTIMIZAÇÃO                                                │
 │  Algoritmo Genético → Consultar DNN (ms) → Minimizar custo          │
@@ -303,7 +303,7 @@ Paralelamente ao rótulo regressivo (aço kgf), cada amostra recebe um rótulo b
 
 A extração de atributos (*features*) transforma a geometria bruta (polígonos e definições de vigas) em um vetor numérico que capture as propriedades estruturalmente relevantes para predição do consumo de aço. Features mal escolhidas podem tornar o modelo incapaz de distinguir edifícios estruturalmente diferentes; features redundantes aumentam a dimensionalidade sem ganho preditivo.
 
-O vetor de features tem **25 dimensões** no esquema v7, organizadas nos blocos funcionais descritos a seguir.
+O vetor de features tem **21 dimensões** no esquema v9, organizadas nos blocos funcionais descritos a seguir.
 
 ### 6.2 Bloco 1 — Estatísticas de Área de Pilares (4 features)
 
@@ -318,7 +318,7 @@ Calculadas sobre `A_i = área(polígono_pilar_i)` para todos os `n` pilares:
 
 **Justificativa estrutural:** A área total da seção transversal correlaciona-se diretamente com a capacidade resistente à compressão dos pilares e com o volume de concreto. A dispersão (std) indica heterogeneidade entre pilares, que influencia a distribuição de esforços. A quantidade de pilares, constante em `n = 9`, e a área média, exatamente igual a `área_total/9`, são mantidas apenas em `FeatureEngineer.get_diagnostics()`.
 
-### 6.3 Bloco 2 — Vãos Livres Direcionais de Vigas (8 features)
+### 6.3 Bloco 2 — Vãos Livres Direcionais de Vigas (6 features)
 
 Cada linha de viga é recortada pela união geométrica dos pilares. Os componentes
 restantes são os vãos físicos entre apoios, classificados nas direções X e Y:
@@ -328,8 +328,6 @@ vãos_livres = linha_da_viga − união_dos_pilares
 
 | Feature | Fórmula | Unidade |
 |---------|---------|---------|
-| `beams_total_clear_length_x_cm` | soma dos vãos livres em X | cm |
-| `beams_total_clear_length_y_cm` | soma dos vãos livres em Y | cm |
 | `beams_std_clear_span_x_cm` | desvio-padrão dos vãos em X | cm |
 | `beams_std_clear_span_y_cm` | desvio-padrão dos vãos em Y | cm |
 | `beams_max_clear_span_x_cm` | maior vão físico em X | cm |
@@ -369,19 +367,22 @@ iguais às somas divididas por nove e não acrescentam informação ao modelo.
 
 ### 6.5 Grandezas Derivadas de Vigas (somente diagnóstico)
 
-Quantidade de objetos de viga, quantidade de vãos por direção, médias, percentis
-95 e volume geométrico são mantidos em `FeatureEngineer.get_diagnostics()`. Neste
-edifício existem sempre seis vãos físicos por direção; as médias são derivadas
-dos totais, os percentis 95 coincidem com os máximos e o volume é proporcional à
-soma dos comprimentos porque a seção das vigas é fixa.
+Quantidade de objetos de viga, quantidade de vãos por direção, comprimentos
+totais, médias, percentis 95 e volume geométrico são mantidos em
+`FeatureEngineer.get_diagnostics()`. Neste edifício existem sempre seis vãos
+físicos por direção; as médias são derivadas dos totais, os percentis 95
+coincidem com os máximos e o volume é proporcional à soma dos comprimentos
+porque a seção das vigas é fixa. Os comprimentos totais foram retirados do modelo
+no schema v9 por serem transformações lineares exatas das dimensões médias dos
+pilares sob a malha e as restrições geométricas atuais.
 
-### 6.6 Bloco 5 — Compacidade (1 feature)
+### 6.6 Compacidade (somente diagnóstico)
 
-| Feature | Fórmula |
-|---------|---------|
+| Métrica de diagnóstico | Fórmula |
+|------------------------|---------|
 | `columns_mean_compactness` | `mean(4π × A_i / P_i²)` |
 
-**Justificativa:** A compacidade (`4πA/P²`) atinge máximo 1,0 para círculo e valores menores para seções alongadas. Os três resumos de perímetro ficam disponíveis em `FeatureEngineer.get_diagnostics()`, mas não entram na rede porque, para seções `20 × L`, são transformações exatas das estatísticas de área.
+**Justificativa:** A compacidade (`4πA/P²`) atinge máximo 1,0 para círculo e valores menores para seções alongadas. Para cada seção, ela satisfaz exatamente `compacidade = 4π/(P/√A)²`; por isso foi retirada do modelo no schema v8 e mantida em `FeatureEngineer.get_diagnostics()`. Os três resumos de perímetro também permanecem apenas nos diagnósticos.
 
 ### 6.7 Bloco 6a — Distribuição Espacial com Referência Fixa (2 features)
 
@@ -428,20 +429,25 @@ laterais e de canto; o termo cruzado identifica concentração diagonal. As duas
 últimas métricas auditam o efeito da rotação das seções sobre a rigidez. Caso as
 restrições de simetria sejam alteradas, a seleção de features deve ser revista.
 
-### 6.8 Bloco 6b — Forma da Seção e Vãos (5 features)
+### 6.8 Bloco 6b — Fatores de Forma da Seção (2 features)
 
 As duas métricas `P/√A` descrevem o alongamento geométrico da seção, mas não são
 a esbeltez do elemento `L_e/r`:
 
 ```text
-shape_slenderness_i = Perímetro_i / √(A_i)
+shape_factor_i = Perímetro_i / √(A_i)
 ```
 
-Também são mantidos o vão máximo, o percentil 95 e a entropia da distribuição
-dos comprimentos efetivos das vigas. A pertinência final dessas cinco features
-será avaliada por ablação antes da coleta completa.
+| Feature | Fórmula / significado |
+|---------|-----------------------|
+| `columns_mean_shape_factor` | média de `shape_factor_i` |
+| `columns_p95_shape_factor` | percentil 95 de `shape_factor_i` |
 
-### 6.9 Bloco 6c — Raio de Giração Direcional (2 features)
+A média representa a forma típica das seções e o percentil 95 destaca as seções
+mais alongadas. Os nomes anteriores com `slenderness` foram removidos no schema
+v8 para não confundir fator de forma com esbeltez estrutural.
+
+### 6.9 Bloco 6c — Balanço Direcional dos Raios de Giração (1 feature)
 
 O raio de giração expressa a distribuição da área em relação ao eixo de flexão:
 
@@ -451,12 +457,17 @@ r_y_i = √(Iyy_i / A_i)
 r_min_i = min(r_x_i, r_y_i)
 ```
 
-| Feature | Fórmula |
-|---------|---------|
-| `mean_radius_gyration_x` | `mean(r_x_i)` (cm) |
-| `mean_radius_gyration_y` | `mean(r_y_i)` (cm) |
+As médias direcionais são combinadas em uma única feature adimensional:
 
-**Justificativa:** Os raios direcionais preservam o efeito da rotação dos pilares. Como todas as seções mantêm uma dimensão mínima de 20 cm, `mean(r_min)` e `min(r_min)` são constantes em aproximadamente `5,7735 cm` e ficam disponíveis apenas como diagnóstico.
+```text
+radius_balance = [mean(r_y) - mean(r_x)] / [mean(r_y) + mean(r_x)]
+```
+
+| Feature | Fórmula / significado |
+|---------|-----------------------|
+| `columns_mean_radius_gyration_directional_balance` | balanço normalizado entre os raios médios; positivo indica predominância da dimensão em X e negativo, em Y |
+
+**Justificativa:** O balanço preserva o efeito da rotação sem duplicar a área total e os comprimentos livres totais. `mean(r_x)`, `mean(r_y)`, `mean(r_min)` e `min(r_min)` continuam disponíveis em `FeatureEngineer.get_diagnostics()`. Como todas as seções mantêm uma dimensão mínima de 20 cm, as duas últimas são constantes em aproximadamente `5,7735 cm`.
 
 ### 6.10 Bloco 6d — Razão Direcional das Seções (3 features)
 
@@ -484,14 +495,13 @@ features de seção.
 
 ```
 Índices  [0-3]    Área de pilares (4)
-         [4-11]   Vãos livres direcionais de vigas (8)
-         [12-14]  Momentos de inércia (3)
-         [15]     Compacidade média (1)
-         [16-17]  Dispersão espacial de área em X e Y (2)
-         [18-19]  Forma das seções (2)
-         [20-21]  Raios de giração direcionais (2)
-         [22-24]  Razão direcional das seções (3)
-         TOTAL: 25 features (schema v7)
+         [4-9]    Vãos livres direcionais de vigas (6)
+         [10-12]  Momentos de inércia (3)
+         [13-14]  Dispersão espacial de área em X e Y (2)
+         [15-16]  Fatores de forma das seções (2)
+         [17]     Balanço direcional dos raios de giração (1)
+         [18-20]  Razão direcional das seções (3)
+         TOTAL: 21 features (schema v9)
 ```
 
 ---
@@ -544,15 +554,15 @@ Os escaladores são serializados com `joblib` para o arquivo `feature_pipeline.p
 
 ### 8.1 Tipo de Modelo
 
-**Rede Neural Profunda Densa (DNN — Deep Neural Network)**, implementada em PyTorch. O modelo é um regressor que mapeia o vetor de 25 features do esquema v7 (normalizado) para o consumo de aço normalizado (escalar).
+**Rede Neural Profunda Densa (DNN — Deep Neural Network)**, implementada em PyTorch. O modelo é um regressor que mapeia o vetor de 21 features do esquema v9 (normalizado) para o consumo de aço normalizado (escalar).
 
 ### 8.2 Arquitetura (classe `SimpleNN`)
 
 ```
-Entrada: x ∈ ℝ²⁵ (normalizado)
+Entrada: x ∈ ℝ²¹ (normalizado)
 
 Camada 1:
-  Linear(25 → 128)
+  Linear(21 → 128)
   BatchNorm1d(128)
   ReLU
   Dropout(p=0.2)
@@ -706,7 +716,7 @@ Cada execução de treinamento cria um diretório autocontido em `outputs/experi
 ├── metadata.json              # Métricas finais e metadados do experimento
 ├── metrics/
 │   ├── epochs.ndjson          # Métricas por época (loss, LR, gradientes)
-│   ├── feature_names.json     # Nomes das 25 features
+│   ├── feature_names.json     # Nomes das 21 features
 │   └── summary.json           # R², MAE, RMSE do teste
 └── plots/
     ├── learning_curves.png
@@ -738,7 +748,7 @@ Para penalizar automaticamente estas configurações, um **classificador binári
 ### 11.2 Treinamento do Classificador
 
 - **Modelo:** Regressão Logística (`sklearn.linear_model.LogisticRegression`, `class_weight='balanced'`, `max_iter=1000`), precedida por um `StandardScaler` no mesmo `Pipeline` (`sklearn.pipeline.make_pipeline`)
-- **Features:** vetor de 25 features, normalizado pelo `StandardScaler` interno do pipeline antes de entrar no classificador
+- **Features:** vetor de 21 features, normalizado pelo `StandardScaler` interno do pipeline antes de entrar no classificador
 - **Split:** 80/20 treino/teste, estratificado por classe (`train_test_split(..., stratify=y, test_size=0.2)`)
 - **Métricas avaliadas:** Acurácia, Precisão, Recall, F1-score, Matriz de Confusão, Curva ROC/AUC
 
@@ -929,7 +939,7 @@ main.py
 │       ├── TQSModelManager.create_building_model_and_elements()
 │       ├── RunModel(building_name) → TQS analisa estrutura
 │       ├── extract_material_summary(RESDES.HTM) → aço kgf, concreto m³
-│       ├── FeatureEngineer.extract_features() → vetor de 25 features
+│       ├── FeatureEngineer.extract_features() → vetor de 21 features
 │       └── Armazenar (features, aço, label_validade)
 │
 ├── 3. Treinamento do Modelo Substituto
@@ -971,7 +981,7 @@ main.py
 
 | Parâmetro | Valor |
 |---|---|
-| `INPUT_SIZE` | 25 |
+| `INPUT_SIZE` | 21 |
 | `HIDDEN_LAYERS` | [128, 128, 64] |
 | `DROPOUT_RATE` | 0,2 |
 | `OUTPUT_SIZE` | 1 |
