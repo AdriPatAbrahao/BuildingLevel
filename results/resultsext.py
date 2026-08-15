@@ -1,75 +1,114 @@
+"""Extraction of material totals from the TQS ``RESDES.HTM`` report."""
+
+from pathlib import Path
+from typing import Optional, Tuple
+import unicodedata
+
 from bs4 import BeautifulSoup
-import os
 
-def extract_material_summary(file_path):
-    """
-    Extracts the total values for steel and concrete from the "Resumo de materiais" table in the HTML file.
 
-    Args:
-        file_path (str): The full path to the RESDES.HTM file.
+MaterialSummary = Tuple[Optional[str], Optional[str]]
 
-    Returns:
-        tuple[str, str]: A tuple (steel_value, concrete_value) with the extracted text values.
-                         Returns None if the table or row is not found.
-    """
-    # Check if the file exists
-    if not os.path.exists(file_path):
-        print(f"File not found: {file_path}")
-        return None
 
-    # Try reading the file with different encodings
-    encodings = ["utf-8", "latin-1", "ISO-8859-1"]  # Common encodings for HTML files
-    html_content = None
+def _normalize_label(value: str) -> str:
+    """Normalize a report label for accent- and case-insensitive matching."""
+    decomposed = unicodedata.normalize("NFKD", value)
+    without_accents = "".join(
+        character for character in decomposed
+        if not unicodedata.combining(character)
+    )
+    return " ".join(without_accents.casefold().split())
 
-    for encoding in encodings:
+
+def _read_report(path: Path) -> Optional[str]:
+    """Read a TQS HTML report using the encodings observed in supported files."""
+    raw = path.read_bytes()
+    for encoding in ("utf-8-sig", "cp1252", "latin-1"):
         try:
-            with open(file_path, "r", encoding=encoding) as file:
-                html_content = file.read()
-            break  # Stop if the file is successfully read
+            return raw.decode(encoding)
         except UnicodeDecodeError:
-            continue  # Try the next encoding
+            continue
+    return None
 
-    # If no encoding worked, raise an error
+
+def extract_material_summary(file_path) -> MaterialSummary:
+    """Extract total steel and concrete values from a TQS material table.
+
+    Columns are located by the normalized headers ``Aço`` and ``Concreto``;
+    their numerical positions may therefore change between report versions.
+    The result values remain strings because numeric conversion and locale
+    handling belong to the calling analysis workflow.
+
+    Parameters
+    ----------
+    file_path:
+        Path to a TQS ``RESDES.HTM`` report.
+
+    Returns
+    -------
+    tuple[Optional[str], Optional[str]]
+        ``(steel_value, concrete_value)``. On a missing file or incompatible
+        table schema, returns ``(None, None)`` so callers can safely unpack it.
+    """
+    path = Path(file_path)
+    if not path.exists():
+        print(f"File not found: {path}")
+        return None, None
+
+    html_content = _read_report(path)
     if html_content is None:
         print("Failed to read the file with the tested encodings.")
-        return None
+        return None, None
 
-    # Parse the HTML content
     soup = BeautifulSoup(html_content, "lxml")
 
-    # Find the table with the title "Resumo de materiais"
     target_table = None
     for table in soup.find_all("table"):
-        header = table.find("td", text="Resumo de materiais")
-        if header:
+        labels = [
+            _normalize_label(cell.get_text(" ", strip=True))
+            for cell in table.find_all(["td", "th"])
+        ]
+        if "resumo de materiais" in labels:
             target_table = table
             break
 
-    # Check if the table was found
-    if not target_table:
+    if target_table is None:
         print("Table 'Resumo de materiais' not found.")
-        return None
+        return None, None
 
-    # Find the "Totais" row
-    totals_row = None
+    steel_index = None
+    concrete_index = None
+    totals_cells = None
+
     for row in target_table.find_all("tr"):
-        cells = row.find_all("td")
-        if len(cells) > 0 and "Totais" in cells[0].get_text():
-            totals_row = cells
-            break
+        cells = row.find_all(["td", "th"])
+        labels = [
+            _normalize_label(cell.get_text(" ", strip=True))
+            for cell in cells
+        ]
+        if "aco" in labels and "concreto" in labels:
+            steel_index = labels.index("aco")
+            concrete_index = labels.index("concreto")
+        if labels and labels[0].startswith("totais"):
+            totals_cells = cells
 
-    # Check if the "Totais" row was found
-    if not totals_row:
+    if steel_index is None or concrete_index is None:
+        print("Headers 'Aço' and 'Concreto' not found in material summary.")
+        return None, None
+    if totals_cells is None:
         print("Row 'Totais' not found in the table.")
-        return None
+        return None, None
 
-    # Extract the values for steel and concrete
-    try:
-        steel_value = totals_row[13].get_text(strip=True)  # Steel value
-        concrete_value = totals_row[14].get_text(strip=True)  # Concrete value
-    except IndexError:
-        print("Error: The table structure does not match the expected format.")
-        return None
+    required_index = max(steel_index, concrete_index)
+    if len(totals_cells) <= required_index:
+        print("Error: The totals row does not match the material headers.")
+        return None, None
+
+    steel_value = totals_cells[steel_index].get_text(" ", strip=True)
+    concrete_value = totals_cells[concrete_index].get_text(" ", strip=True)
+    if steel_value in {"", "-"} or concrete_value in {"", "-"}:
+        print("Error: Steel or concrete total is empty in the material summary.")
+        return None, None
 
     return steel_value, concrete_value
-    
+
