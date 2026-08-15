@@ -17,7 +17,7 @@ def _features_by_name(columns):
     engineer = FeatureEngineer(columns, [])
     values = engineer.extract_features()
     names = FeatureEngineer.feature_names()
-    assert len(values) == len(names) == 33
+    assert len(values) == len(names) == 28
     return dict(zip(names, values)), engineer.get_spatial_diagnostics()
 
 
@@ -81,8 +81,18 @@ def test_constant_metrics_are_diagnostics_not_model_features():
     model_names = set(engineer.feature_names())
 
     assert diagnostics["columns_count"] == pytest.approx(1.0)
+    assert diagnostics["columns_mean_area_cm2"] == pytest.approx(2000.0)
+    assert diagnostics["vol_columns_m3"] == pytest.approx(0.6)
+    assert diagnostics["columns_total_perimeter_cm"] == pytest.approx(240.0)
+    assert diagnostics["columns_mean_perimeter_cm"] == pytest.approx(240.0)
+    assert diagnostics["columns_std_perimeter_cm"] == pytest.approx(0.0)
     assert diagnostics["mean_radius_gyration_min"] == pytest.approx(20.0 / 12**0.5)
     assert diagnostics["min_radius_gyration_global"] == pytest.approx(20.0 / 12**0.5)
     assert "columns_count" not in model_names
+    assert "columns_mean_area_cm2" not in model_names
+    assert "vol_columns_m3" not in model_names
+    assert "columns_total_perimeter_cm" not in model_names
+    assert "columns_mean_perimeter_cm" not in model_names
+    assert "columns_std_perimeter_cm" not in model_names
     assert "mean_radius_gyration_min" not in model_names
     assert "min_radius_gyration_global" not in model_names

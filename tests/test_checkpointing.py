@@ -37,7 +37,7 @@ def test_checkpoint_round_trip_preserves_collection_state(tmp_path):
     restored = optimizer._restore_collection_state(checkpoint)
 
     assert checkpoint["checkpoint_version"] == 3
-    assert checkpoint["feature_schema_version"] == 4
+    assert checkpoint["feature_schema_version"] == 5
     assert checkpoint["python_random_state"]
     assert restored[:4] == ([[3.0, 4.0]], [[1200.0]], 1, 7)
     assert restored[4] is True

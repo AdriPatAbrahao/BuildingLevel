@@ -17,26 +17,26 @@ class FeatureEngineer:
         self.column_polygons = column_polygons
         self.beam_definitions = beam_definitions
         self._spatial_diagnostics: Dict[str, float] = {}
-        self._constant_diagnostics: Dict[str, float] = {}
+        self._non_model_diagnostics: Dict[str, float] = {}
 
     def extract_features(self) -> List[float]:
         """
         Computes all engineered features and returns them as a single vector.
 
-        Feature layout (33 total, schema v4):
-          [0-4]   Column area stats (5; constant count is diagnostic only)
-          [5-9]   Beam effective-length stats (5)
-          [10-14] Inertia (sum_Ix, sum_Iy, mean_Ix, mean_Iy, ratio) (5)
-          [15-16] Geometric volumes — columns, beams (2)
-          [17-20] Column perimeter / compactness (4)
-          [21-22] Fixed-reference area spread in X and Y (2)
-          [23-27] Section-shape and beam-span descriptors (5)
-          [28-29] Directional radius of gyration (2)
-          [30-32] Section directional aspect ratio (3)
+        Feature layout (28 total, schema v5):
+          [0-3]   Non-redundant column area stats (4)
+          [4-8]   Beam effective-length stats (5)
+          [9-13]  Inertia (sum_Ix, sum_Iy, mean_Ix, mean_Iy, ratio) (5)
+          [14]    Beam geometric volume (1)
+          [15]    Mean column compactness (1)
+          [16-17] Fixed-reference area spread in X and Y (2)
+          [18-22] Section-shape and beam-span descriptors (5)
+          [23-24] Directional radius of gyration (2)
+          [25-27] Section directional aspect ratio (3)
         """
         features = []
 
-        # --- Block 1: Column area features (5; count is diagnostic) ---
+        # --- Block 1: Non-redundant column area features (4) ---
         col_areas = np.array([p.area for p in self.column_polygons], dtype=float)
         num_columns = len(self.column_polygons)
         if col_areas.size > 0:
@@ -49,8 +49,7 @@ class FeatureEngineer:
             total_column_area = mean_col_area = std_col_area = min_col_area = max_col_area = 0.0
 
         features.extend([
-            total_column_area, mean_col_area,
-            std_col_area, min_col_area, max_col_area,
+            total_column_area, std_col_area, min_col_area, max_col_area,
         ])
 
         # --- Block 2: Beam effective-length features (5) ---
@@ -111,22 +110,20 @@ class FeatureEngineer:
 
         features.extend([sum_Ix, sum_Iy, mean_Ix, mean_Iy, inertia_ratio])
 
-        # --- Block 4: Geometric volumes (2) ---
+        # --- Block 4: Beam geometric volume (column volume is diagnostic) ---
         vol_columns_m3 = calculate_column_geometric_volume(self.column_polygons)
-        features.extend([vol_columns_m3, total_beam_volume_m3])
+        features.append(total_beam_volume_m3)
 
-        # --- Block 5: Column perimeter / compactness (4) ---
+        # --- Block 5: Column compactness (perimeter stats are diagnostic) ---
         perims = [p.length for p in self.column_polygons]
         compact = [
             float(4.0 * np.pi * p.area / (p.length * p.length))
             for p in self.column_polygons if p.length > 0
         ]
-        features.extend([
-            float(np.sum(perims))   if perims   else 0.0,
-            float(np.mean(perims))  if perims   else 0.0,
-            float(np.std(perims))   if perims   else 0.0,
-            float(np.mean(compact)) if compact  else 0.0,
-        ])
+        total_perimeter = float(np.sum(perims)) if perims else 0.0
+        mean_perimeter = float(np.mean(perims)) if perims else 0.0
+        std_perimeter = float(np.std(perims)) if perims else 0.0
+        features.append(float(np.mean(compact)) if compact else 0.0)
 
         # --- Block 6: Spatial + structural features (14) ---
         if self.column_polygons:
@@ -237,8 +234,13 @@ class FeatureEngineer:
             mean_ry      = float(np.mean(ry_list))    if ry_list    else 0.0
             mean_r_min   = float(np.mean(r_min_list)) if r_min_list else 0.0
             min_r_global = float(np.min(r_min_list))  if r_min_list else 0.0
-            self._constant_diagnostics = {
+            self._non_model_diagnostics = {
                 "columns_count": float(num_columns),
+                "columns_mean_area_cm2": mean_col_area,
+                "vol_columns_m3": float(vol_columns_m3),
+                "columns_total_perimeter_cm": total_perimeter,
+                "columns_mean_perimeter_cm": mean_perimeter,
+                "columns_std_perimeter_cm": std_perimeter,
                 "mean_radius_gyration_min": mean_r_min,
                 "min_radius_gyration_global": min_r_global,
             }
@@ -268,8 +270,8 @@ class FeatureEngineer:
                 mean_aspect, std_aspect, max_aspect,
             ])
 
-        assert len(features) == 33, (
-            f"Feature count mismatch: expected 33, got {len(features)}. "
+        assert len(features) == 28, (
+            f"Feature count mismatch: expected 28, got {len(features)}. "
             "Update NeuralNetConfig.INPUT_SIZE and feature_names() if features were added/removed."
         )
         return features
@@ -282,16 +284,15 @@ class FeatureEngineer:
 
     def get_diagnostics(self) -> Dict[str, float]:
         """Return all metrics excluded from model input by design."""
-        if not self._spatial_diagnostics or not self._constant_diagnostics:
+        if not self._spatial_diagnostics or not self._non_model_diagnostics:
             self.extract_features()
-        return {**self._spatial_diagnostics, **self._constant_diagnostics}
+        return {**self._spatial_diagnostics, **self._non_model_diagnostics}
 
     @staticmethod
     def feature_names() -> List[str]:
         base = [
-            # Block 1 — column area stats (5)
+            # Block 1 — non-redundant column area stats (4)
             "columns_total_area_cm2",
-            "columns_mean_area_cm2",
             "columns_std_area_cm2",
             "columns_min_area_cm2",
             "columns_max_area_cm2",
@@ -307,13 +308,9 @@ class FeatureEngineer:
             "inertia_mean_Ix",
             "inertia_mean_Iy",
             "inertia_ratio_Iy_over_Ix",
-            # Block 4 — geometric volumes (2)
-            "vol_columns_m3",
+            # Block 4 — beam geometric volume (1)
             "vol_beams_m3",
-            # Block 5 — perimeter / compactness (4)
-            "columns_total_perimeter_cm",
-            "columns_mean_perimeter_cm",
-            "columns_std_perimeter_cm",
+            # Block 5 — compactness (1)
             "columns_mean_compactness",
         ]
         spatial = [
