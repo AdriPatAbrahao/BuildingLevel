@@ -4,11 +4,15 @@
 import pytest
 from shapely.geometry import Polygon
 import numpy as np
+from config.constants import DEFAULT_SLAB_VOLUME
 
 # Módulo que estamos testando
 from utils.geometric_calculator import (
     get_geometric_concrete_volume,
+    calculate_column_geometric_volume,
     calculate_column_formwork_area,
+    calculate_beams_geometric_volume,
+    calculate_beams_geometric_volume_with_subtractions,
     COLUMN_STORY_HEIGHT_M,
     BEAM_WIDTH_M,
     BEAM_HEIGHT_M,
@@ -44,40 +48,54 @@ def simple_beam_definitions():
 
 # --- Testes para get_geometric_concrete_volume ---
 
-def test_full_calculation_with_columns_and_beams(simple_column_polygons, simple_beam_definitions):
+def test_full_calculation_with_columns_beam_and_slabs():
     """
-    Testa o cálculo completo com pilares e vigas.
-    Verifica se o volume total é a soma correta dos volumes individuais.
+    Valida o contrato completo: pilares + vigas face a face + lajes.
+
+    A viga vai do centro de dois pilares 20 x 20 cm. Dos 300 cm de eixo,
+    10 cm em cada extremidade pertencem aos pilares, restando 280 cm.
     """
-    # --- Valores Esperados ---
-    # Volume dos Pilares (em m^3)
-    # Pilar 1: (1000 cm^2 / 10000) * 3.0m = 0.1 m^2 * 3.0m = 0.3 m^3
-    # Pilar 2: (1200 cm^2 / 10000) * 3.0m = 0.12 m^2 * 3.0m = 0.36 m^3
-    # Total Pilares: 0.3 + 0.36 = 0.66 m^3
-    expected_column_volume = (1000 / 10000 * COLUMN_STORY_HEIGHT_M) + (1200 / 10000 * COLUMN_STORY_HEIGHT_M)
+    columns = [
+        Polygon([(-10, -10), (10, -10), (10, 10), (-10, 10)]),
+        Polygon([(290, -10), (310, -10), (310, 10), (290, 10)]),
+    ]
+    beams = [{"node_1": (0, 0), "node_2": (300, 0)}]
 
-    # Volume das Vigas (em m^3)
-    # Viga 1: (300cm * 0.01) * BEAM_WIDTH_M * BEAM_HEIGHT_M = 3.0m * 0.2m * 0.4m = 0.24 m^3
-    # Viga 2: (500cm * 0.01) * BEAM_WIDTH_M * BEAM_HEIGHT_M = 5.0m * 0.2m * 0.4m = 0.40 m^3
-    # Total Vigas: 0.24 + 0.40 = 0.64 m^3
-    expected_beam_volume = (3.0 * BEAM_WIDTH_M * BEAM_HEIGHT_M) + (5.0 * BEAM_WIDTH_M * BEAM_HEIGHT_M)
-
-    expected_total_volume = expected_column_volume + expected_beam_volume
-
-    # --- Execução ---
-    total_volume = get_geometric_concrete_volume(
-        column_polygons=simple_column_polygons, 
-        beam_definitions=simple_beam_definitions
+    expected_column_volume = 2 * (400 / 10000) * COLUMN_STORY_HEIGHT_M
+    expected_beam_volume = 2.8 * BEAM_WIDTH_M * BEAM_HEIGHT_M
+    expected_total_volume = (
+        expected_column_volume + expected_beam_volume + DEFAULT_SLAB_VOLUME
     )
 
-    # --- Verificação ---
-    # Usamos np.isclose para comparar floats com segurança
+    total_volume = get_geometric_concrete_volume(columns, beams)
+
     assert np.isclose(total_volume, expected_total_volume)
+
+
+def test_beam_component_distinguishes_raw_and_face_to_face_volume():
+    columns = [
+        Polygon([(-10, -10), (10, -10), (10, 10), (-10, 10)]),
+        Polygon([(290, -10), (310, -10), (310, 10), (290, 10)]),
+    ]
+    beams = [{"node_1": (0, 0), "node_2": (300, 0)}]
+
+    raw_volume = calculate_beams_geometric_volume(beams)
+    effective_volume = calculate_beams_geometric_volume_with_subtractions(
+        beams, columns
+    )
+
+    assert np.isclose(raw_volume, 0.24)
+    assert np.isclose(effective_volume, 0.224)
+
+
+def test_fixed_slab_volume_matches_four_clear_panels():
+    # Quatro painéis: (3,50 - 0,20) x (4,00 - 0,20) x 0,12 m.
+    expected_slab_volume = 4 * 3.30 * 3.80 * 0.12
+    assert np.isclose(DEFAULT_SLAB_VOLUME, expected_slab_volume)
 
 def test_calculation_with_only_columns(simple_column_polygons):
     """
-    Testa o cálculo quando apenas pilares são fornecidos.
-    O volume das vigas deve ser zero.
+    Sem vigas, o total contém pilares e as lajes fixas.
     """
     expected_column_volume = (1000 / 10000 * COLUMN_STORY_HEIGHT_M) + (1200 / 10000 * COLUMN_STORY_HEIGHT_M)
     
@@ -86,12 +104,11 @@ def test_calculation_with_only_columns(simple_column_polygons):
         beam_definitions=[]  # Lista de vigas vazia
     )
     
-    assert np.isclose(total_volume, expected_column_volume)
+    assert np.isclose(total_volume, expected_column_volume + DEFAULT_SLAB_VOLUME)
 
 def test_calculation_with_only_beams(simple_beam_definitions):
     """
-    Testa o cálculo quando apenas vigas são fornecidas.
-    O volume dos pilares deve ser zero.
+    Sem pilares, não há descontos; o total contém vigas brutas e lajes.
     """
     expected_beam_volume = (3.0 * BEAM_WIDTH_M * BEAM_HEIGHT_M) + (5.0 * BEAM_WIDTH_M * BEAM_HEIGHT_M)
 
@@ -100,19 +117,18 @@ def test_calculation_with_only_beams(simple_beam_definitions):
         beam_definitions=simple_beam_definitions
     )
 
-    assert np.isclose(total_volume, expected_beam_volume)
+    assert np.isclose(total_volume, expected_beam_volume + DEFAULT_SLAB_VOLUME)
 
-def test_calculation_with_no_geometry():
+def test_calculation_without_columns_or_beams_returns_slab_volume():
     """
-    Testa o caso de borda onde não há pilares nem vigas.
-    O resultado deve ser 0.
+    O contrato total mantém os quatro painéis de laje fixos.
     """
     total_volume = get_geometric_concrete_volume(
         column_polygons=[],
         beam_definitions=[]
     )
     
-    assert total_volume == 0.0
+    assert np.isclose(total_volume, DEFAULT_SLAB_VOLUME)
 
 def test_calculation_with_invalid_inputs_raises_error():
     """

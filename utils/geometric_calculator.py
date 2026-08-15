@@ -179,18 +179,24 @@ def calculate_beams_geometric_volume_with_subtractions(beam_definitions: List[Di
 
 def get_geometric_concrete_volume(column_polygons: List[Dict], beam_definitions: List[Dict]) -> float:
     """
-    Calcula o volume geométrico total estimado de concreto para pilares e vigas.
+    Calcula o volume geométrico total de concreto do pavimento de referência.
 
-    IMPORTANTE: Este cálculo é uma aproximação e ignora a sobreposição de
-    volumes nas interseções entre pilares e vigas. O resultado pode ser
-    maior que o volume calculado por softwares como o TQS.
+    O contrato do cálculo é:
+
+    ``V_total = V_pilares + V_vigas_líquidas + V_lajes``
+
+    ``V_pilares`` usa a seção completa por todo o pé-direito;
+    ``V_vigas_líquidas`` desconta os comprimentos das linhas de eixo que estão
+    dentro dos pilares, evitando dupla contagem; e ``V_lajes`` é o volume fixo
+    ``DEFAULT_SLAB_VOLUME`` dos quatro painéis do pavimento. Consequentemente,
+    mesmo uma chamada sem pilares e sem vigas retorna o volume das lajes.
 
     Args:
-        column_polygons (List[Dict]): Lista de dicionários dos polígonos de pilares.
+        column_polygons (List[Polygon]): Polígonos das seções dos pilares.
         beam_definitions (List[Dict]): Lista de dicionários das definições de vigas.
 
     Returns:
-        float: Volume total estimado de concreto em metros cúbicos (m³).
+        float: Volume total de concreto do pavimento em metros cúbicos (m³).
     """
     # Validação de entrada para garantir que os argumentos são listas
     if not isinstance(column_polygons, list) or not isinstance(beam_definitions, list):

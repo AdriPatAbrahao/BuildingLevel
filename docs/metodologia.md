@@ -96,9 +96,9 @@ Segmentos com o mesmo `group_id` pertencem ao mesmo grupo de simetria e recebem 
 A classe `LengthProcessor` converte os segmentos em polígonos Shapely que representam a seção transversal dos pilares. O processo é:
 
 1. **Agrupamento de segmentos conectados:** Segmentos que compartilham um nó são agrupados para compor a seção de um único pilar.
-2. **Geração de retângulos:** Cada segmento gera um retângulo de largura igual à metade da espessura da viga (`DEFAULT_BEAM_WIDTH_CM / 2 = 10 cm`), centralizado no eixo do segmento.
+2. **Geração de retângulos:** Cada segmento gera um retângulo com espessura total de 20 cm, estendendo-se 10 cm para cada lado de seu eixo (`DEFAULT_BEAM_WIDTH_CM / 2 = 10 cm`).
 3. **União de polígonos:** Os retângulos de cada grupo são unidos via operação booleana (Shapely `union`), produzindo a seção transversal resultante — que pode ser retangular, em L, em T etc.
-4. **Restrição de seção retangular:** O `DesignSpace` detecta automaticamente pares de grupos que compartilham o mesmo nó físico mas atuam em eixos perpendiculares (um em `dx`, outro em `dy`). Para cada par, somente o grupo com maior desvio em relação ao comprimento inicial é ativado, garantindo seções exclusivamente retangulares.
+4. **Restrição de seção retangular:** O `DesignSpace` detecta automaticamente pares de grupos perpendiculares cujos retângulos da geometria semente possuem área de sobreposição positiva. A detecção é geométrica e também reconhece cantos em que os eixos têm pontos iniciais deslocados. Para cada par, somente o grupo com maior desvio em relação ao comprimento inicial é ativado, garantindo que cada pilar cresça em apenas uma direção. O simples contato pela borda entre pilares distintos não cria uma restrição.
 
 ### 2.4 Vigas
 
@@ -118,6 +118,14 @@ As vigas têm dimensões fixas: **b = 20 cm × h = 40 cm** (`DEFAULT_BEAM_WIDTH_
 ```
 L_efetivo = L_total - Σ comprimento_de_interseção_com_pilares
 ```
+
+O volume geométrico total de concreto do pavimento segue o contrato:
+
+```
+V_total = V_pilares + V_vigas_líquidas + V_lajes
+```
+
+O desconto nas vigas evita dupla contagem do concreto nas interseções com os pilares. O volume fixo das quatro lajes é `6,0192 m³`, obtido por `4 × 3,30 m × 3,80 m × 0,12 m`. A área de fôrma calculada pelo sistema corresponde somente às faces laterais dos pilares (`perímetro × pé-direito`), não à fôrma total de vigas e lajes.
 
 ### 2.5 Cargas
 
