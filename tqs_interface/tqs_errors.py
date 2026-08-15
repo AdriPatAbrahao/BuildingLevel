@@ -48,7 +48,7 @@ class TQSErrorReader:
         return self._ngererro is not None and self._nmsgerro is not None
 
     def get_critical_errors(
-        self, building_name: str = None
+        self, building_name: str = None, strict: bool = False
     ) -> List[ErrorData]:
         """
         Collect critical errors (classification==2) from three project folders.
@@ -75,6 +75,8 @@ class TQSErrorReader:
         collected: List[Tuple[int, str]] = []
 
         if not self._dlls_available():
+            if strict:
+                raise RuntimeError("TQS error-reader DLLs are unavailable.")
             return []
 
         # Define signatures (best-effort based on C# sample)
@@ -94,6 +96,8 @@ class TQSErrorReader:
 
         if not all([ERR_OPEN, ERR_CLOSE, ERR_NPROG, ERR_POSPROG, ERR_LER, ERR_HEAD, ERR_LITPEL,
                     ERRO_OPEN, ERRO_CLOSE, ERRO_LER, ERRO_CLASS, ERRO_DESCR]):
+            if strict:
+                raise RuntimeError("TQS error-reader DLL API is incomplete.")
             return []
 
         # Basic argtypes/restype assumptions
@@ -111,18 +115,29 @@ class TQSErrorReader:
         ERRO_CLASS.argtypes = [c_int_p]
         ERRO_DESCR.argtypes = [ctypes.c_char_p, ctypes.c_int]
 
+        original_cwd = os.getcwd()
+        visited_targets = 0
         for path in targets:
             if not os.path.isdir(path):
                 continue
+            visited_targets += 1
             try:
                 os.chdir(path)
                 istat = ctypes.c_int(0)
                 ERRO_OPEN(ctypes.byref(istat))
                 if istat.value != 0:
+                    if strict:
+                        raise RuntimeError(
+                            f"ERRO_OPEN failed with status {istat.value} in '{path}'."
+                        )
                     continue
                 ERR_OPEN(ctypes.byref(istat))
                 if istat.value != 0:
                     ERRO_CLOSE()
+                    if strict:
+                        raise RuntimeError(
+                            f"ERR_OPEN failed with status {istat.value} in '{path}'."
+                        )
                     continue
 
                 numprogr = ctypes.c_int(0)
@@ -152,8 +167,11 @@ class TQSErrorReader:
                             error_header = desc.value.decode(errors="ignore").split("\x00")[0]
                             collected.append((iele.value, error_header))
 
-            except Exception:
-                pass
+            except Exception as exc:
+                if strict:
+                    raise RuntimeError(
+                        f"TQS error-reader failed in '{path}': {exc}"
+                    ) from exc
             finally:
                 try:
                     ERR_CLOSE()
@@ -163,6 +181,15 @@ class TQSErrorReader:
                     ERRO_CLOSE()
                 except Exception:
                     pass
+                try:
+                    os.chdir(original_cwd)
+                except OSError:
+                    pass
+
+        if strict and visited_targets == 0:
+            raise RuntimeError(
+                f"No TQS error folders were found for building '{_name}'."
+            )
 
         # Deduplicate
         unique = {}

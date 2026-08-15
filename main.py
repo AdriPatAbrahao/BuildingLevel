@@ -1525,7 +1525,16 @@ class BuildingOptimizer:
                     print(f"   TQS Critical Errors detection active. DLL dir: {getattr(self._error_reader, '_dll_dir', None)}")
                 except Exception:
                     pass
-            critical_errors = self._error_reader.get_critical_errors()
+            validity_required = bool(
+                getattr(ParallelConfig, "VALIDITY_CHECK_DLL", False)
+            )
+            if validity_required and not det_ok:
+                raise RuntimeError(
+                    "TQS validity DLLs are required but unavailable."
+                )
+            critical_errors = self._error_reader.get_critical_errors(
+                strict=validity_required
+            )
             is_valid = len(critical_errors) == 0
             end_time_tqs = time.time()
             self._last_tqs_exec_time = end_time_tqs - start_time_exec

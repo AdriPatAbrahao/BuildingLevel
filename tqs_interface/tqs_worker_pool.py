@@ -83,6 +83,35 @@ class WorkerResult:
         return self.error is None and self.steel is not None
 
 
+def _evaluate_structural_validity(
+    error_reader,
+    slot_name: str,
+    required: bool,
+) -> bool:
+    """Return structural validity, failing closed when the DLL is required.
+
+    A requested validity check must never silently turn into a valid label.
+    Missing DLLs and reader failures therefore abort the sample instead of
+    allowing it into either the classifier or regression dataset.
+    """
+    if not required:
+        return True
+    if not error_reader._dlls_available():
+        raise RuntimeError(
+            f"TQS validity DLLs are unavailable for slot '{slot_name}'."
+        )
+    try:
+        errors = error_reader.get_critical_errors(
+            building_name=slot_name,
+            strict=True,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"TQS validity check failed for slot '{slot_name}': {exc}"
+        ) from exc
+    return len(errors) == 0
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # TQS execution with hard timeout
 # ──────────────────────────────────────────────────────────────────────────────
@@ -181,7 +210,7 @@ def _worker_main(
         # Drive may already be mapped — query to confirm
         _check = _sp.run(["subst"], capture_output=True, text=True)
         if "T:\\" not in _check.stdout and "T:/" not in _check.stdout:
-            print(f"[{slot_name}] WARNING: could not map T: drive — TQS may fail.")
+            print(f"[{slot_name}] WARNING: could not map T: drive; TQS may fail.")
 
     # ── Deferred imports: TQS DLL is only initialised inside the subprocess ──
     try:
@@ -194,7 +223,7 @@ def _worker_main(
     except ImportError as exc:
         # Can't use TQSUtil before it's imported — fall back to print.
         print(
-            f"[{slot_name}] FATAL: import failed — {exc}\n"
+            f"[{slot_name}] FATAL: import failed: {exc}\n"
             f"{traceback.format_exc()}"
         )
         result_q.put(
@@ -281,20 +310,15 @@ def _worker_main(
             concrete = float(str(raw[1]).replace(",", "."))
 
             # ── 5. Optional structural-validity check (DLL-based) ─────────
-            is_valid = True
-            if validity_check_dll and error_reader._dlls_available():
-                try:
-                    errors = error_reader.get_critical_errors(
-                        building_name=slot_name
-                    )
-                    if errors:
-                        is_valid = False
-                        TQSUtil.writef(
-                            f"[{slot_name}] Job #{job_id}: "
-                            f"{len(errors)} critical error(s) -> invalid."
-                        )
-                except Exception:
-                    pass  # DLL check is non-fatal
+            is_valid = _evaluate_structural_validity(
+                error_reader,
+                slot_name,
+                required=validity_check_dll,
+            )
+            if not is_valid:
+                TQSUtil.writef(
+                    f"[{slot_name}] Job #{job_id}: critical error(s) -> invalid."
+                )
 
             elapsed = time.perf_counter() - t0
             TQSUtil.writef(
@@ -404,7 +428,7 @@ class TQSWorkerPool:
         Returns *self* so the pool can be used as a context manager or
         chained: ``pool = TQSWorkerPool(2).start()``.
         """
-        log.info("TQSWorkerPool: starting %d worker(s)…", self.num_workers)
+        log.info("TQSWorkerPool: starting %d worker(s)...", self.num_workers)
         print(
             f"[TQSWorkerPool] Starting {self.num_workers} worker(s) "
             f"with slots: {', '.join(self.slot_names)}"
@@ -430,8 +454,8 @@ class TQSWorkerPool:
 
     def stop(self) -> None:
         """Send poison-pills to all workers and wait for clean exit."""
-        log.info("TQSWorkerPool: sending shutdown signals…")
-        print("[TQSWorkerPool] Sending shutdown signals…")
+        log.info("TQSWorkerPool: sending shutdown signals...")
+        print("[TQSWorkerPool] Sending shutdown signals...")
 
         for jq in self._job_queues:
             jq.put(None)                       # one poison-pill per queue
@@ -440,7 +464,7 @@ class TQSWorkerPool:
             p.join(timeout=30)
             if p.is_alive():
                 log.warning(
-                    "Worker %s did not exit within 30 s — terminating.", p.name
+                    "Worker %s did not exit within 30 s; terminating.", p.name
                 )
                 p.terminate()
 
@@ -484,12 +508,12 @@ class TQSWorkerPool:
 
         approx_q = self._job_queues[slot_idx].qsize()
         log.debug(
-            "Submitted job #%d → [%s] (queue depth ≈ %d).",
+            "Submitted job #%d -> [%s] (queue depth about %d).",
             job_id, self.slot_names[slot_idx], approx_q,
         )
         print(
-            f"[TQSWorkerPool] Job #{job_id} → [{self.slot_names[slot_idx]}]"
-            f"  (queue depth ≈ {approx_q})"
+            f"[TQSWorkerPool] Job #{job_id} -> [{self.slot_names[slot_idx]}]"
+            f"  (queue depth about {approx_q})"
         )
         return job_id
 
@@ -507,7 +531,7 @@ class TQSWorkerPool:
         result = self._result_q.get(timeout=timeout)
         self._pending.pop(result.job_id, None)
         log.debug(
-            "Result for job #%d from [%s] — success=%s  elapsed=%.1fs",
+            "Result for job #%d from [%s]; success=%s  elapsed=%.1fs",
             result.job_id, result.slot_name, result.success, result.elapsed,
         )
         return result

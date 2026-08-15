@@ -81,7 +81,8 @@ class ParallelConfig:
     BASE_NAME         = "OptimizedBuilding"  # slot prefix → OptimizedBuilding_01, _02 …
     TIMEOUT_SEC       = 180            # per-job RESDES.HTM wait timeout (seconds)
     MAX_CONSECUTIVE_TIMEOUTS = 3       # stop collection only after this many timeouts in a row
-    VALIDITY_CHECK_DLL = False  # TQS DLL check: desativado — investigar erros classe==2 após treino
+    # Required for collection: unavailable/failed DLL checks reject the sample.
+    VALIDITY_CHECK_DLL = True
 
 
 class ObjectiveConfig:
