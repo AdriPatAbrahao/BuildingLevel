@@ -17,7 +17,7 @@ def _features_by_name(columns):
     engineer = FeatureEngineer(columns, [])
     values = engineer.extract_features()
     names = FeatureEngineer.feature_names()
-    assert len(values) == len(names) == 28
+    assert len(values) == len(names) == 27
     return dict(zip(names, values)), engineer.get_spatial_diagnostics()
 
 
@@ -96,3 +96,26 @@ def test_constant_metrics_are_diagnostics_not_model_features():
     assert "columns_std_perimeter_cm" not in model_names
     assert "mean_radius_gyration_min" not in model_names
     assert "min_radius_gyration_global" not in model_names
+
+
+def test_continuous_beam_is_split_into_physical_clear_spans():
+    columns = [
+        _rectangle(0.0, 0.0, 20.0, 20.0),
+        _rectangle(100.0, 0.0, 20.0, 20.0),
+        _rectangle(200.0, 0.0, 20.0, 20.0),
+    ]
+    beams = [{"node_1": (-10.0, 0.0), "node_2": (210.0, 0.0)}]
+    engineer = FeatureEngineer(columns, beams)
+    features = dict(zip(engineer.feature_names(), engineer.extract_features()))
+    diagnostics = engineer.get_diagnostics()
+
+    assert features["beams_total_clear_length_x_cm"] == pytest.approx(160.0)
+    assert features["beams_total_clear_length_y_cm"] == pytest.approx(0.0)
+    assert features["beams_std_clear_span_x_cm"] == pytest.approx(0.0)
+    assert features["beams_max_clear_span_x_cm"] == pytest.approx(80.0)
+    assert diagnostics["beam_definition_count"] == pytest.approx(1.0)
+    assert diagnostics["clear_span_count_x"] == pytest.approx(2.0)
+    assert diagnostics["clear_span_count_y"] == pytest.approx(0.0)
+    assert diagnostics["beams_mean_clear_span_x_cm"] == pytest.approx(80.0)
+    assert diagnostics["beams_p95_clear_span_x_cm"] == pytest.approx(80.0)
+    assert diagnostics["vol_beams_m3"] == pytest.approx(0.128)

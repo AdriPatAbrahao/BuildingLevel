@@ -38,7 +38,7 @@ O processo tem quatro fases principais:
 │  Gerar N variações geométricas → Analisar no TQS → Registrar saídas │
 ├─────────────────────────────────────────────────────────────────────┤
 │  FASE 2 — TREINAMENTO DO MODELO SUBSTITUTO                          │
-│  Extrair 33 features → Normalizar → Treinar DNN → Avaliar           │
+│  Extrair 27 features → Normalizar → Treinar DNN → Avaliar           │
 ├─────────────────────────────────────────────────────────────────────┤
 │  FASE 3 — OTIMIZAÇÃO                                                │
 │  Algoritmo Genético → Consultar DNN (ms) → Minimizar custo          │
@@ -303,38 +303,43 @@ Paralelamente ao rótulo regressivo (aço kgf), cada amostra recebe um rótulo b
 
 A extração de atributos (*features*) transforma a geometria bruta (polígonos e definições de vigas) em um vetor numérico que capture as propriedades estruturalmente relevantes para predição do consumo de aço. Features mal escolhidas podem tornar o modelo incapaz de distinguir edifícios estruturalmente diferentes; features redundantes aumentam a dimensionalidade sem ganho preditivo.
 
-O vetor de features tem **33 dimensões** no esquema v4, organizadas em seis blocos funcionais, descritos a seguir.
+O vetor de features tem **27 dimensões** no esquema v6, organizadas em seis blocos funcionais, descritos a seguir.
 
-### 6.2 Bloco 1 — Estatísticas de Área de Pilares (5 features)
+### 6.2 Bloco 1 — Estatísticas de Área de Pilares (4 features)
 
 Calculadas sobre `A_i = área(polígono_pilar_i)` para todos os `n` pilares:
 
 | Feature | Fórmula | Unidade |
 |---------|---------|---------|
 | `columns_total_area_cm2` | `Σ A_i` | cm² |
-| `columns_mean_area_cm2` | `Σ A_i / n` | cm² |
 | `columns_std_area_cm2` | `std(A_i)` | cm² |
 | `columns_min_area_cm2` | `min(A_i)` | cm² |
 | `columns_max_area_cm2` | `max(A_i)` | cm² |
 
-**Justificativa estrutural:** A área total da seção transversal correlaciona-se diretamente com a capacidade resistente à compressão dos pilares e com o volume de concreto. A dispersão (std) indica heterogeneidade entre pilares, que influencia a distribuição de esforços. A quantidade de pilares, constante em `n = 9`, é mantida apenas em `FeatureEngineer.get_diagnostics()`.
+**Justificativa estrutural:** A área total da seção transversal correlaciona-se diretamente com a capacidade resistente à compressão dos pilares e com o volume de concreto. A dispersão (std) indica heterogeneidade entre pilares, que influencia a distribuição de esforços. A quantidade de pilares, constante em `n = 9`, e a área média, exatamente igual a `área_total/9`, são mantidas apenas em `FeatureEngineer.get_diagnostics()`.
 
-### 6.3 Bloco 2 — Estatísticas de Comprimentos Efetivos de Vigas (5 features)
+### 6.3 Bloco 2 — Vãos Livres Direcionais de Vigas (8 features)
 
-O comprimento efetivo de cada viga é calculado descontando a interseção com pilares:
+Cada linha de viga é recortada pela união geométrica dos pilares. Os componentes
+restantes são os vãos físicos entre apoios, classificados nas direções X e Y:
 ```
-L_ef_j = max(comprimento_total_j − Σ interseção(viga_j, pilar_i), 0)
+vãos_livres = linha_da_viga − união_dos_pilares
 ```
 
 | Feature | Fórmula | Unidade |
 |---------|---------|---------|
-| `beams_total_effective_length_cm` | `Σ L_ef_j` | cm |
-| `beams_count` | número de vigas | — |
-| `beams_mean_effective_length_cm` | `mean(L_ef_j)` | cm |
-| `beams_std_effective_length_cm` | `std(L_ef_j)` | cm |
-| `beams_max_effective_length_cm` | `max(L_ef_j)` | cm |
+| `beams_total_clear_length_x_cm` | soma dos vãos livres em X | cm |
+| `beams_total_clear_length_y_cm` | soma dos vãos livres em Y | cm |
+| `beams_std_clear_span_x_cm` | desvio-padrão dos vãos em X | cm |
+| `beams_std_clear_span_y_cm` | desvio-padrão dos vãos em Y | cm |
+| `beams_max_clear_span_x_cm` | maior vão físico em X | cm |
+| `beams_max_clear_span_y_cm` | maior vão físico em Y | cm |
+| `beams_span_entropy_x` | entropia da distribuição dos vãos em X | — |
+| `beams_span_entropy_y` | entropia da distribuição dos vãos em Y | — |
 
-**Justificativa estrutural:** O vão livre das vigas é o principal fator que determina o momento fletor e o consumo de armadura em vigas. Vãos maiores exigem seções mais robustas ou mais armadura.
+**Justificativa estrutural:** Embora o alvo seja somente o aço dos pilares, os
+vãos, cargas e rigidezes das vigas modificam os esforços transferidos aos pilares.
+A separação X/Y preserva a interação com a orientação das seções dos pilares.
 
 ### 6.4 Bloco 3 — Momentos de Inércia (5 features)
 
@@ -360,25 +365,21 @@ onde `(x̄, ȳ)` é o centroide do polígono (calculado pelo Shapely).
 
 **Justificativa estrutural:** A inércia da seção transversal determina a rigidez à flexão e é proporcional ao consumo de armadura em regime de flexo-compressão. A razão `Iyy/Ixx` captura a assimetria direcional da rigidez estrutural.
 
-### 6.5 Bloco 4 — Volumes Geométricos (2 features)
+### 6.5 Grandezas Derivadas de Vigas (somente diagnóstico)
 
-| Feature | Fórmula | Unidade |
-|---------|---------|---------|
-| `vol_columns_m3` | Volume calculado geometricamente dos pilares | m³ |
-| `vol_beams_m3` | `(Σ L_ef_j × cm_to_m) × b × h` | m³ |
+Quantidade de objetos de viga, quantidade de vãos por direção, médias, percentis
+95 e volume geométrico são mantidos em `FeatureEngineer.get_diagnostics()`. Neste
+edifício existem sempre seis vãos físicos por direção; as médias são derivadas
+dos totais, os percentis 95 coincidem com os máximos e o volume é proporcional à
+soma dos comprimentos porque a seção das vigas é fixa.
 
-**Justificativa:** O volume geométrico é um proxy direto do consumo de concreto e correlaciona-se com o peso próprio da estrutura, que influi nas cargas verticais.
-
-### 6.6 Bloco 5 — Perímetro e Compacidade (4 features)
+### 6.6 Bloco 5 — Compacidade (1 feature)
 
 | Feature | Fórmula |
 |---------|---------|
-| `columns_total_perimeter_cm` | `Σ perímetro(polígono_i)` |
-| `columns_mean_perimeter_cm` | `mean(perímetro_i)` |
-| `columns_std_perimeter_cm` | `std(perímetro_i)` |
 | `columns_mean_compactness` | `mean(4π × A_i / P_i²)` |
 
-**Justificativa:** A compacidade (`4πA/P²`) atinge máximo 1,0 para círculo e valores menores para seções alongadas. Pilares compactos têm melhor comportamento à compressão centrada; seções alongadas (esbeltez elevada) exigem mais armadura de confinamento.
+**Justificativa:** A compacidade (`4πA/P²`) atinge máximo 1,0 para círculo e valores menores para seções alongadas. Os três resumos de perímetro ficam disponíveis em `FeatureEngineer.get_diagnostics()`, mas não entram na rede porque, para seções `20 × L`, são transformações exatas das estatísticas de área.
 
 ### 6.7 Bloco 6a — Distribuição Espacial com Referência Fixa (2 features)
 
@@ -480,16 +481,15 @@ features de seção.
 ### 6.11 Resumo do Vetor de Features
 
 ```
-Índices  [0-4]    Área de pilares (5)
-         [5-9]    Comprimentos efetivos de vigas (5)
-         [10-14]  Momentos de inércia (5)
-         [15-16]  Volumes geométricos (2)
-         [17-20]  Perímetro e compacidade (4)
-         [21-22]  Dispersão espacial de área em X e Y (2)
-         [23-27]  Forma da seção e distribuição de vãos (5)
-         [28-29]  Raios de giração direcionais (2)
-         [30-32]  Razão direcional das seções (3)
-         TOTAL: 33 features (schema v4)
+Índices  [0-3]    Área de pilares (4)
+         [4-11]   Vãos livres direcionais de vigas (8)
+         [12-16]  Momentos de inércia (5)
+         [17]     Compacidade média (1)
+         [18-19]  Dispersão espacial de área em X e Y (2)
+         [20-21]  Forma das seções (2)
+         [22-23]  Raios de giração direcionais (2)
+         [24-26]  Razão direcional das seções (3)
+         TOTAL: 27 features (schema v6)
 ```
 
 ---
@@ -542,7 +542,7 @@ Os escaladores são serializados com `joblib` para o arquivo `feature_pipeline.p
 
 ### 8.1 Tipo de Modelo
 
-**Rede Neural Profunda Densa (DNN — Deep Neural Network)**, implementada em PyTorch. O modelo é um regressor que mapeia o vetor de 33 features do esquema v4 (normalizado) para o consumo de aço normalizado (escalar).
+**Rede Neural Profunda Densa (DNN — Deep Neural Network)**, implementada em PyTorch. O modelo é um regressor que mapeia o vetor de 27 features do esquema v6 (normalizado) para o consumo de aço normalizado (escalar).
 
 ### 8.2 Arquitetura (classe `SimpleNN`)
 
@@ -550,7 +550,7 @@ Os escaladores são serializados com `joblib` para o arquivo `feature_pipeline.p
 Entrada: x ∈ ℝ⁴³ (normalizado)
 
 Camada 1:
-  Linear(33 → 128)
+  Linear(27 → 128)
   BatchNorm1d(128)
   ReLU
   Dropout(p=0.2)
@@ -704,7 +704,7 @@ Cada execução de treinamento cria um diretório autocontido em `outputs/experi
 ├── metadata.json              # Métricas finais e metadados do experimento
 ├── metrics/
 │   ├── epochs.ndjson          # Métricas por época (loss, LR, gradientes)
-│   ├── feature_names.json     # Nomes das 33 features
+│   ├── feature_names.json     # Nomes das 27 features
 │   └── summary.json           # R², MAE, RMSE do teste
 └── plots/
     ├── learning_curves.png
@@ -736,7 +736,7 @@ Para penalizar automaticamente estas configurações, um **classificador binári
 ### 11.2 Treinamento do Classificador
 
 - **Modelo:** Regressão Logística (`sklearn.linear_model.LogisticRegression`, `class_weight='balanced'`, `max_iter=1000`), precedida por um `StandardScaler` no mesmo `Pipeline` (`sklearn.pipeline.make_pipeline`)
-- **Features:** vetor de 33 features, normalizado pelo `StandardScaler` interno do pipeline antes de entrar no classificador
+- **Features:** vetor de 27 features, normalizado pelo `StandardScaler` interno do pipeline antes de entrar no classificador
 - **Split:** 80/20 treino/teste, estratificado por classe (`train_test_split(..., stratify=y, test_size=0.2)`)
 - **Métricas avaliadas:** Acurácia, Precisão, Recall, F1-score, Matriz de Confusão, Curva ROC/AUC
 
@@ -927,7 +927,7 @@ main.py
 │       ├── TQSModelManager.create_building_model_and_elements()
 │       ├── RunModel(building_name) → TQS analisa estrutura
 │       ├── extract_material_summary(RESDES.HTM) → aço kgf, concreto m³
-│       ├── FeatureEngineer.extract_features() → vetor de 33 features
+│       ├── FeatureEngineer.extract_features() → vetor de 27 features
 │       └── Armazenar (features, aço, label_validade)
 │
 ├── 3. Treinamento do Modelo Substituto
@@ -969,7 +969,7 @@ main.py
 
 | Parâmetro | Valor |
 |---|---|
-| `INPUT_SIZE` | 33 |
+| `INPUT_SIZE` | 27 |
 | `HIDDEN_LAYERS` | [128, 128, 64] |
 | `DROPOUT_RATE` | 0,2 |
 | `OUTPUT_SIZE` | 1 |

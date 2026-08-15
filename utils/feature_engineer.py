@@ -1,12 +1,12 @@
 
 from typing import List, Dict
-from shapely.geometry import Polygon, LineString, MultiLineString, box
+from shapely.geometry import Polygon, LineString, MultiLineString, GeometryCollection, box
+from shapely.ops import unary_union
 import numpy as np
 from config.constants import DEFAULT_BEAM_WIDTH_CM, DEFAULT_BEAM_HEIGHT_CM
 from config.settings import BuildingConfig
 from utils.geometric_calculator import (
     calculate_column_geometric_volume,
-    calculate_beams_geometric_volume,
 )
 
 class FeatureEngineer:
@@ -23,16 +23,15 @@ class FeatureEngineer:
         """
         Computes all engineered features and returns them as a single vector.
 
-        Feature layout (28 total, schema v5):
+        Feature layout (27 total, schema v6):
           [0-3]   Non-redundant column area stats (4)
-          [4-8]   Beam effective-length stats (5)
-          [9-13]  Inertia (sum_Ix, sum_Iy, mean_Ix, mean_Iy, ratio) (5)
-          [14]    Beam geometric volume (1)
-          [15]    Mean column compactness (1)
-          [16-17] Fixed-reference area spread in X and Y (2)
-          [18-22] Section-shape and beam-span descriptors (5)
-          [23-24] Directional radius of gyration (2)
-          [25-27] Section directional aspect ratio (3)
+          [4-11]  Physical clear-span stats separated into X and Y (8)
+          [12-16] Inertia (sum_Ix, sum_Iy, mean_Ix, mean_Iy, ratio) (5)
+          [17]    Mean column compactness (1)
+          [18-19] Fixed-reference area spread in X and Y (2)
+          [20-21] Section-shape descriptors (2)
+          [22-23] Directional radius of gyration (2)
+          [24-26] Section directional aspect ratio (3)
         """
         features = []
 
@@ -52,29 +51,53 @@ class FeatureEngineer:
             total_column_area, std_col_area, min_col_area, max_col_area,
         ])
 
-        # --- Block 2: Beam effective-length features (5) ---
+        # --- Block 2: Physical clear-span features by direction (8) ---
         beam_lines = [LineString([b['node_1'], b['node_2']]) for b in self.beam_definitions]
 
-        def _intersect_len(line: LineString, poly: Polygon) -> float:
-            try:
-                inter = line.intersection(poly)
-                if inter.is_empty:
-                    return 0.0
-                if isinstance(inter, LineString):
-                    return float(inter.length)
-                if isinstance(inter, MultiLineString):
-                    return float(sum(seg.length for seg in inter.geoms))
-                return 0.0
-            except Exception:
-                return 0.0
-
-        effective_lengths = []
+        column_union = unary_union(self.column_polygons)
+        clear_spans = {"x": [], "y": []}
         for ln in beam_lines:
-            subtract = sum(_intersect_len(ln, cp) for cp in self.column_polygons)
-            effective_lengths.append(max(ln.length - subtract, 0.0))
+            remaining = ln.difference(column_union)
+            if isinstance(remaining, LineString):
+                parts = [remaining]
+            elif isinstance(remaining, MultiLineString):
+                parts = list(remaining.geoms)
+            elif isinstance(remaining, GeometryCollection):
+                parts = [g for g in remaining.geoms if isinstance(g, LineString)]
+            else:
+                parts = []
+            x0, y0 = ln.coords[0]
+            x1, y1 = ln.coords[-1]
+            axis = "x" if abs(x1 - x0) >= abs(y1 - y0) else "y"
+            clear_spans[axis].extend(
+                float(part.length) for part in parts if part.length > 1e-9
+            )
 
-        total_eff_beam_length = float(sum(effective_lengths))
-        num_beams = len(beam_lines)
+        spans_x = clear_spans["x"]
+        spans_y = clear_spans["y"]
+        total_x = float(sum(spans_x))
+        total_y = float(sum(spans_y))
+        total_eff_beam_length = total_x + total_y
+
+        def _span_entropy(lengths: List[float]) -> float:
+            if not lengths:
+                return 0.0
+            hist, _ = np.histogram(np.asarray(lengths, dtype=float), bins=10, density=True)
+            probabilities = hist / (np.sum(hist) + 1e-9)
+            entropy = float(-np.sum(probabilities * np.log(probabilities + 1e-9)))
+            return max(entropy, 0.0)
+
+        def _mean(lengths: List[float]) -> float:
+            return float(np.mean(lengths)) if lengths else 0.0
+
+        def _std(lengths: List[float]) -> float:
+            return float(np.std(lengths)) if lengths else 0.0
+
+        def _max(lengths: List[float]) -> float:
+            return float(np.max(lengths)) if lengths else 0.0
+
+        def _p95(lengths: List[float]) -> float:
+            return float(np.percentile(lengths, 95)) if lengths else 0.0
 
         CM_TO_M = 0.01
         beam_width_m  = DEFAULT_BEAM_WIDTH_CM  * CM_TO_M
@@ -82,11 +105,14 @@ class FeatureEngineer:
         total_beam_volume_m3 = (total_eff_beam_length * CM_TO_M) * beam_width_m * beam_height_m
 
         features.extend([
-            total_eff_beam_length,
-            num_beams,
-            float(np.mean(effective_lengths)) if effective_lengths else 0.0,
-            float(np.std(effective_lengths))  if effective_lengths else 0.0,
-            float(np.max(effective_lengths))  if effective_lengths else 0.0,
+            total_x,
+            total_y,
+            _std(spans_x),
+            _std(spans_y),
+            _max(spans_x),
+            _max(spans_y),
+            _span_entropy(spans_x),
+            _span_entropy(spans_y),
         ])
 
         # --- Block 3: Inertia features (5) ---
@@ -110,9 +136,8 @@ class FeatureEngineer:
 
         features.extend([sum_Ix, sum_Iy, mean_Ix, mean_Iy, inertia_ratio])
 
-        # --- Block 4: Beam geometric volume (column volume is diagnostic) ---
+        # --- Derived geometric volumes (diagnostic only) ---
         vol_columns_m3 = calculate_column_geometric_volume(self.column_polygons)
-        features.append(total_beam_volume_m3)
 
         # --- Block 5: Column compactness (perimeter stats are diagnostic) ---
         perims = [p.length for p in self.column_polygons]
@@ -187,17 +212,6 @@ class FeatureEngineer:
             else:
                 mean_slenderness = p95_slenderness = 0.0
 
-            # Kept: beam span distribution
-            span_max = float(np.max(effective_lengths)) if effective_lengths else 0.0
-            span_p95 = float(np.percentile(effective_lengths, 95)) if effective_lengths else 0.0
-            if effective_lengths:
-                bins = max(10, min(50, int(np.sqrt(len(effective_lengths)))))
-                hist, _ = np.histogram(np.array(effective_lengths), bins=bins, density=True)
-                p = hist / (np.sum(hist) + 1e-9)
-                span_entropy = float(-np.sum(p * np.log(p + 1e-9)))
-            else:
-                span_entropy = 0.0
-
             # Signed stiffness eccentricities relative to the fixed load center.
             # X resistance is weighted by Iyy; Y resistance is weighted by Ixx.
             sum_Iyy = float(iyy_arr.sum())
@@ -241,6 +255,14 @@ class FeatureEngineer:
                 "columns_total_perimeter_cm": total_perimeter,
                 "columns_mean_perimeter_cm": mean_perimeter,
                 "columns_std_perimeter_cm": std_perimeter,
+                "beam_definition_count": float(len(beam_lines)),
+                "clear_span_count_x": float(len(spans_x)),
+                "clear_span_count_y": float(len(spans_y)),
+                "beams_mean_clear_span_x_cm": _mean(spans_x),
+                "beams_mean_clear_span_y_cm": _mean(spans_y),
+                "beams_p95_clear_span_x_cm": _p95(spans_x),
+                "beams_p95_clear_span_y_cm": _p95(spans_y),
+                "vol_beams_m3": float(total_beam_volume_m3),
                 "mean_radius_gyration_min": mean_r_min,
                 "min_radius_gyration_global": min_r_global,
             }
@@ -258,20 +280,17 @@ class FeatureEngineer:
                 # --- variable fixed-reference spatial distribution (2) ---
                 area_spread_x,
                 area_spread_y,
-                # --- section shape and beam spans (5) ---
+                # --- section shape (2) ---
                 mean_slenderness,
                 p95_slenderness,
-                span_max,
-                span_p95,
-                span_entropy,
                 # --- directional radius of gyration (2) ---
                 mean_rx, mean_ry,
                 # --- directional aspect ratio (3) ---
                 mean_aspect, std_aspect, max_aspect,
             ])
 
-        assert len(features) == 28, (
-            f"Feature count mismatch: expected 28, got {len(features)}. "
+        assert len(features) == 27, (
+            f"Feature count mismatch: expected 27, got {len(features)}. "
             "Update NeuralNetConfig.INPUT_SIZE and feature_names() if features were added/removed."
         )
         return features
@@ -296,33 +315,31 @@ class FeatureEngineer:
             "columns_std_area_cm2",
             "columns_min_area_cm2",
             "columns_max_area_cm2",
-            # Block 2 — beam effective-length stats (5)
-            "beams_total_effective_length_cm",
-            "beams_count",
-            "beams_mean_effective_length_cm",
-            "beams_std_effective_length_cm",
-            "beams_max_effective_length_cm",
+            # Block 2 — physical clear-span stats by direction (8)
+            "beams_total_clear_length_x_cm",
+            "beams_total_clear_length_y_cm",
+            "beams_std_clear_span_x_cm",
+            "beams_std_clear_span_y_cm",
+            "beams_max_clear_span_x_cm",
+            "beams_max_clear_span_y_cm",
+            "beams_span_entropy_x",
+            "beams_span_entropy_y",
             # Block 3 — inertia (5)
             "inertia_sum_Ix",
             "inertia_sum_Iy",
             "inertia_mean_Ix",
             "inertia_mean_Iy",
             "inertia_ratio_Iy_over_Ix",
-            # Block 4 — beam geometric volume (1)
-            "vol_beams_m3",
-            # Block 5 — compactness (1)
+            # Block 4 — compactness (1)
             "columns_mean_compactness",
         ]
         spatial = [
             # Block 6a — variable fixed-reference spatial distribution (2)
             "column_area_spread_x_norm",
             "column_area_spread_y_norm",
-            # Block 6b — section shape and beam spans (5)
+            # Block 6b — section shape (2)
             "pillars_mean_slenderness",
             "pillars_p95_slenderness",
-            "beams_span_max_cm",
-            "beams_span_p95_cm",
-            "beams_span_entropy",
             # Block 6c — directional radius of gyration (2)
             "mean_radius_gyration_x",
             "mean_radius_gyration_y",
