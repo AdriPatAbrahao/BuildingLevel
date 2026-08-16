@@ -153,6 +153,30 @@ def test_redundant_beam_totals_and_mean_radii_are_diagnostics_only():
         assert name not in model_names
 
 
+def test_log_aspect_descriptors_are_symmetric_under_rotation():
+    vertical_features, _ = _features_by_name(
+        [_rectangle(360.0, 410.0, 20.0, 100.0)]
+    )
+    horizontal_features, _ = _features_by_name(
+        [_rectangle(360.0, 410.0, 100.0, 20.0)]
+    )
+
+    mean_name = "columns_mean_log_aspect_ratio"
+    std_name = "columns_std_log_aspect_ratio"
+    max_name = "columns_max_abs_log_aspect_ratio"
+    assert horizontal_features[mean_name] == pytest.approx(-vertical_features[mean_name])
+    assert vertical_features[std_name] == pytest.approx(horizontal_features[std_name])
+    assert vertical_features[max_name] == pytest.approx(horizontal_features[max_name])
+    assert vertical_features[max_name] == pytest.approx(vertical_features[mean_name] * -1.0)
+
+
+def test_raw_aspect_summary_names_are_not_model_features():
+    model_names = set(FeatureEngineer.feature_names())
+    assert "mean_col_aspect_ratio" not in model_names
+    assert "std_col_aspect_ratio" not in model_names
+    assert "max_col_aspect_ratio" not in model_names
+
+
 def test_mean_inertias_are_diagnostics_not_model_features():
     engineer = FeatureEngineer(
         [_rectangle(360.0, 410.0, 20.0, 100.0)],

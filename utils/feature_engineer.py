@@ -24,14 +24,14 @@ class FeatureEngineer:
         """
         Computes all engineered features and returns them as a single vector.
 
-        Feature layout (21 total, schema v9):
+        Feature layout (21 total, schema v10):
           [0-3]   Non-redundant column area stats (4)
           [4-9]   Non-redundant clear-span stats separated into X and Y (6)
           [10-12] Inertia (sum_Ix, sum_Iy, ratio) (3)
           [13-14] Fixed-reference area spread in X and Y (2)
           [15-16] Section-shape factors (2)
           [17]    Mean directional radius-of-gyration balance (1)
-          [18-20] Section directional aspect ratio (3)
+          [18-20] Logarithmic directional aspect descriptors (3)
         """
         features = []
 
@@ -277,14 +277,27 @@ class FeatureEngineer:
                 "min_radius_gyration_global": min_r_global,
             }
 
-            # NEW: Column aspect ratio h/b ≈ sqrt(Iyy/Ixx) — captures section directionality
-            aspect_list = [
-                float(np.sqrt(abs(Iyy_i) / (abs(Ixx_i) + 1e-9)))
-                for Ixx_i, Iyy_i in zip(moments_of_inertia_xx, moments_of_inertia_yy)
-            ]
-            mean_aspect = float(np.mean(aspect_list)) if aspect_list else 1.0
-            std_aspect  = float(np.std(aspect_list))  if aspect_list else 0.0
-            max_aspect  = float(np.max(aspect_list))  if aspect_list else 1.0
+            # Logarithmic aspect log(b/h) = 0.5*log(Iyy/Ixx). A physical 90°
+            # rotation changes only its sign, so horizontal and vertical
+            # elongation are treated symmetrically.
+            log_aspect_list = []
+            for Ixx_i, Iyy_i in zip(moments_of_inertia_xx, moments_of_inertia_yy):
+                abs_ixx = abs(Ixx_i)
+                abs_iyy = abs(Iyy_i)
+                log_aspect_list.append(
+                    float(0.5 * np.log(abs_iyy / abs_ixx))
+                    if abs_ixx > 0.0 and abs_iyy > 0.0
+                    else 0.0
+                )
+            mean_log_aspect = (
+                float(np.mean(log_aspect_list)) if log_aspect_list else 0.0
+            )
+            std_log_aspect = (
+                float(np.std(log_aspect_list)) if log_aspect_list else 0.0
+            )
+            max_abs_log_aspect = (
+                float(np.max(np.abs(log_aspect_list))) if log_aspect_list else 0.0
+            )
 
             features.extend([
                 # --- variable fixed-reference spatial distribution (2) ---
@@ -295,8 +308,8 @@ class FeatureEngineer:
                 p95_shape_factor,
                 # --- normalized mean directional radius balance (1) ---
                 directional_radius_balance,
-                # --- directional aspect ratio (3) ---
-                mean_aspect, std_aspect, max_aspect,
+                # --- rotation-symmetric logarithmic aspect descriptors (3) ---
+                mean_log_aspect, std_log_aspect, max_abs_log_aspect,
             ])
 
         assert len(features) == 21, (
@@ -346,10 +359,10 @@ class FeatureEngineer:
             "columns_p95_shape_factor",
             # Block 6 — normalized mean directional radius balance (1)
             "columns_mean_radius_gyration_directional_balance",
-            # Block 7 — directional column aspect ratio (3)
-            "mean_col_aspect_ratio",
-            "std_col_aspect_ratio",
-            "max_col_aspect_ratio",
+            # Block 7 — logarithmic directional column aspect (3)
+            "columns_mean_log_aspect_ratio",
+            "columns_std_log_aspect_ratio",
+            "columns_max_abs_log_aspect_ratio",
         ]
         return base + spatial
     

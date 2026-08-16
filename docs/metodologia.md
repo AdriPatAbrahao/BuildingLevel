@@ -303,7 +303,7 @@ Paralelamente ao rótulo regressivo (aço kgf), cada amostra recebe um rótulo b
 
 A extração de atributos (*features*) transforma a geometria bruta (polígonos e definições de vigas) em um vetor numérico que capture as propriedades estruturalmente relevantes para predição do consumo de aço. Features mal escolhidas podem tornar o modelo incapaz de distinguir edifícios estruturalmente diferentes; features redundantes aumentam a dimensionalidade sem ganho preditivo.
 
-O vetor de features tem **21 dimensões** no esquema v9, organizadas nos blocos funcionais descritos a seguir.
+O vetor de features tem **21 dimensões** no esquema v10, organizadas nos blocos funcionais descritos a seguir.
 
 ### 6.2 Bloco 1 — Estatísticas de Área de Pilares (4 features)
 
@@ -469,27 +469,29 @@ radius_balance = [mean(r_y) - mean(r_x)] / [mean(r_y) + mean(r_x)]
 
 **Justificativa:** O balanço preserva o efeito da rotação sem duplicar a área total e os comprimentos livres totais. `mean(r_x)`, `mean(r_y)`, `mean(r_min)` e `min(r_min)` continuam disponíveis em `FeatureEngineer.get_diagnostics()`. Como todas as seções mantêm uma dimensão mínima de 20 cm, as duas últimas são constantes em aproximadamente `5,7735 cm`.
 
-### 6.10 Bloco 6d — Razão Direcional das Seções (3 features)
+### 6.10 Bloco 6d — Descritores Logarítmicos de Orientação (3 features)
 
-A razão de aspecto é estimada a partir dos momentos de inércia centroidais:
+A orientação e o alongamento são obtidos dos momentos de inércia centroidais:
 
 ```
-aspect_i = √(|Iyy_i| / (|Ixx_i| + ε))
+log_aspect_i = 0,5 × log(|Iyy_i| / |Ixx_i|) = log(b_i/h_i)
 ```
 
-(Para seção retangular com dimensão `b` em X e `h` em Y: `Ixx = bh³/12`,
-`Iyy = hb³/12`, portanto a fórmula atual retorna `b/h`. Ao girar a seção em
-90°, a razão é invertida, preservando sua orientação.)
+Para seção retangular com dimensão `b` em X e `h` em Y, uma rotação de 90°
+transforma `log(b/h)` em `−log(b/h)`. Uma seção quadrada produz zero, enquanto
+seções horizontais e verticais de mesmo alongamento têm módulos iguais e sinais
+opostos.
 
 | Feature | Fórmula |
 |---------|---------|
-| `mean_col_aspect_ratio` | `mean(aspect_i)` |
-| `std_col_aspect_ratio` | `std(aspect_i)` |
-| `max_col_aspect_ratio` | `max(aspect_i)` |
+| `columns_mean_log_aspect_ratio` | `mean(log_aspect_i)`; balanço direcional com sinal |
+| `columns_std_log_aspect_ratio` | `std(log_aspect_i)`; dispersão das orientações |
+| `columns_max_abs_log_aspect_ratio` | `max(|log_aspect_i|)`; maior alongamento sem favorecer um eixo |
 
-**Justificativa:** A razão preserva a direcionalidade da rigidez e, portanto, o
-efeito de girar um pilar. Sua seleção definitiva será discutida na revisão das
-features de seção.
+**Justificativa:** A transformação logarítmica preserva a direcionalidade da
+rigidez sem a assimetria numérica da razão bruta `b/h`: valores `q` e `1/q`
+passam a ter a mesma magnitude. Os três resumos anteriores da razão bruta foram
+substituídos no schema v10.
 
 ### 6.11 Resumo do Vetor de Features
 
@@ -500,8 +502,8 @@ features de seção.
          [13-14]  Dispersão espacial de área em X e Y (2)
          [15-16]  Fatores de forma das seções (2)
          [17]     Balanço direcional dos raios de giração (1)
-         [18-20]  Razão direcional das seções (3)
-         TOTAL: 21 features (schema v9)
+         [18-20]  Descritores logarítmicos de orientação (3)
+         TOTAL: 21 features (schema v10)
 ```
 
 ---
@@ -554,7 +556,7 @@ Os escaladores são serializados com `joblib` para o arquivo `feature_pipeline.p
 
 ### 8.1 Tipo de Modelo
 
-**Rede Neural Profunda Densa (DNN — Deep Neural Network)**, implementada em PyTorch. O modelo é um regressor que mapeia o vetor de 21 features do esquema v9 (normalizado) para o consumo de aço normalizado (escalar).
+**Rede Neural Profunda Densa (DNN — Deep Neural Network)**, implementada em PyTorch. O modelo é um regressor que mapeia o vetor de 21 features do esquema v10 (normalizado) para o consumo de aço normalizado (escalar).
 
 ### 8.2 Arquitetura (classe `SimpleNN`)
 
