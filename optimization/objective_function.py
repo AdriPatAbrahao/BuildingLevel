@@ -32,7 +32,7 @@ class ObjectiveFunction:
         self.PRECO_CONCRETO_M3 = getattr(ObjectiveConfig, "CONCRETE_PRICE_M3", 10.0)
         self.PRECO_ACO_KGF = getattr(ObjectiveConfig, "STEEL_PRICE_KG", 100.0)
         self.PRECO_FORMA_M2 = getattr(ObjectiveConfig, "FORM_PRICE_M2", 10.0)
-        self.COMPRIMENTO_PASSO = getattr(ObjectiveConfig, "LENGTH_STEP_CM", 20.0)  # PASSO DISCRETO (cm)
+        self.COMPRIMENTO_PASSO = getattr(ObjectiveConfig, "LENGTH_STEP_CM", 5.0)  # PASSO DISCRETO (cm)
         self.INVALID_PROB_THRESHOLD = getattr(ObjectiveConfig, "INVALID_PROB_THRESHOLD", 0.5)
         self.INVALID_COST_PENALTY = getattr(ObjectiveConfig, "INVALID_COST_PENALTY", 1_000_000)
         # ---------------------------

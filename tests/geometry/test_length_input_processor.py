@@ -9,6 +9,7 @@ import numpy as np
 
 # Módulo que estamos testando
 from geometry.length_input_processor import LengthProcessor
+from config.settings import ObjectiveConfig
 
 # --- Fixtures: Dados de teste reutilizáveis ---
 
@@ -117,6 +118,27 @@ def test_generate_variation_changes_length():
     assert new_segments[0]["length"] != segments[0]["length"], "O comprimento deveria ter sido alterado"
     assert new_segments[0]["length"] > 50
     assert new_segments[0]["length"] <= 100, "O novo comprimento não deve exceder o maxlength"
+
+
+def test_generate_variation_uses_the_optimization_length_step(monkeypatch):
+    monkeypatch.setattr(ObjectiveConfig, "LENGTH_STEP_CM", 7.0)
+    processor = LengthProcessor()
+    segments = [
+        {
+            "start": (0.0, 0.0),
+            "end": (50.0, 0.0),
+            "length": 50.0,
+            "maxlength": 99.0,
+            "binary": 1,
+        }
+    ]
+    random.seed(42)
+
+    varied = processor.generate_variation(segments)
+
+    delta = varied[0]["length"] - segments[0]["length"]
+    assert delta > 0.0
+    assert delta % ObjectiveConfig.LENGTH_STEP_CM == pytest.approx(0.0)
 
 def test_generate_variation_updates_endpoint():
     """

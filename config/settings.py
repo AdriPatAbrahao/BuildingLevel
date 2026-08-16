@@ -74,6 +74,10 @@ class DataSplitConfig:
     # features e hiperparâmetros. Elas podem ser usadas no desenvolvimento,
     # mas nunca na estimativa final de generalização.
     PREUSED_DEVELOPMENT_PREFIX_SAMPLES = 230
+    # The 230 valid pilot configurations correspond to 253 classifier rows
+    # (valid + invalid TQS outcomes). These rows may support development, but
+    # must never enter the untouched final classifier test set.
+    PREUSED_CLASSIFIER_PREFIX_SAMPLES = 253
     REGRESSION_STRATIFICATION_BINS = 10
 
 class ParallelConfig:
@@ -87,8 +91,9 @@ class ParallelConfig:
 
     Tuning guidelines
     -----------------
-    * ``NUM_WORKERS``: start at 2 and raise by 1 until CPU/RAM saturate.
-      Each worker uses ~1 GB RAM and one TQS licence seat.
+    * ``NUM_WORKERS``: keep at 1 while TQS process cleanup targets the global
+      ``NTQSHTM.EXE`` image name. More workers require PID-isolated cleanup and
+      enough TQS licence seats; otherwise one slot can terminate another.
     * ``BASE_NAME``: slots are ``{BASE_NAME}_01``, ``_02``, … — the ``_NN``
       suffix keeps them distinct from ``BuildingConfig.NAME`` (no suffix).
     * ``TIMEOUT_SEC``: increase for very large buildings or slow machines.
@@ -107,7 +112,8 @@ class ObjectiveConfig:
     CONCRETE_PRICE_M3 = 10.0
     STEEL_PRICE_KG = 100.0
     FORM_PRICE_M2 = 10.0  # R$/m² — custo de forma (fôrma) dos pilares; AJUSTAR para o valor real de mercado
-    LENGTH_STEP_CM = 20.0
+    # Constructive discretization shared by data generation and optimization.
+    LENGTH_STEP_CM = 5.0
     INVALID_PROB_THRESHOLD = 0.5
     INVALID_COST_PENALTY = 1_000_000
     STOP_MIN_STEEL_KG = 0.0

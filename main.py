@@ -18,6 +18,7 @@ Date: March 2025
 # Standard library imports
 import copy
 import argparse
+import math
 import random as py_random
 import traceback
 import time # Added for potential delays and timing
@@ -71,7 +72,10 @@ from utils.geometric_calculator import get_geometric_concrete_volume # Fast geom
 from utils.file_handler import save_final_vectors_to_csv # Saves generated vectors to CSV
 from utils.feature_engineer import FeatureEngineer
 from utils.feature_pipeline import FeaturePipeline
-from utils.data_split import regression_train_validation_test_split
+from utils.data_split import (
+    classification_train_validation_test_split,
+    regression_train_validation_test_split,
+)
 from utils.plot_data_store import PlotDataStore
 from utils.classifier_evaluation import (
     classifier_metrics,
@@ -334,22 +338,40 @@ class BuildingOptimizer:
             raise RuntimeError(f"Data mismatch: {len(features)} features vs {len(outputs)} outputs collected.")
 
         num_samples = len(features)
-        # Check feature/output dimensions consistency
+        # Check every row, not only the first one: a late malformed TQS sample
+        # must not reach scaling or model training.
+        expected_features = int(NeuralNetConfig.INPUT_SIZE)
+        expected_outputs = int(NeuralNetConfig.OUTPUT_SIZE)
         try:
-             num_features = len(features[0])
-             num_outputs = len(outputs[0])
-        except IndexError:
-             raise RuntimeError("Collected data lists seem to contain empty elements.")
+            feature_array = np.asarray(features, dtype=float)
+            output_array = np.asarray(outputs, dtype=float)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "Collected data contains inconsistent or non-numeric rows."
+            ) from exc
+        if feature_array.ndim != 2 or feature_array.shape[1] != expected_features:
+            raise RuntimeError(
+                "Collected feature shape differs from the configured schema "
+                f"({feature_array.shape} vs. (*, {expected_features}))."
+            )
+        if output_array.ndim != 2 or output_array.shape[1] != expected_outputs:
+            raise RuntimeError(
+                "Collected output shape differs from the configured target "
+                f"({output_array.shape} vs. (*, {expected_outputs}))."
+            )
+        if not np.isfinite(feature_array).all():
+            raise RuntimeError("Collected features contain NaN or infinite values.")
+        if not np.isfinite(output_array).all():
+            raise RuntimeError("Collected outputs contain NaN or infinite values.")
+        if np.any(output_array <= 0.0):
+            raise RuntimeError("Collected material outputs must be positive.")
+
+        num_features = feature_array.shape[1]
+        num_outputs = output_array.shape[1]
 
         print(f"Validation passed: {num_samples} samples collected.")
         print(f"Feature vector size: {num_features}")
         print(f"Output vector size:  {num_outputs} ({'Steel only' if num_outputs==1 else 'Steel & Concrete'})")
-        expected_features = int(NeuralNetConfig.INPUT_SIZE)
-        if num_features != expected_features:
-            raise RuntimeError(
-                "Collected feature size differs from NeuralNetConfig.INPUT_SIZE "
-                f"({num_features} != {expected_features})."
-            )
 
     def _save_results(self):
         """Saves generated configurations or other desired results."""
@@ -395,7 +417,7 @@ class BuildingOptimizer:
         """
         import copy as _copy
 
-        num_workers   = int(getattr(ParallelConfig, "NUM_WORKERS", 2))
+        num_workers   = int(getattr(ParallelConfig, "NUM_WORKERS", 1))
         base_name     = str(getattr(ParallelConfig, "BASE_NAME", "OptimBuilding"))
         timeout_sec   = int(getattr(ParallelConfig, "TIMEOUT_SEC", 180))
         max_iterations = self.num_target_samples * RunConfig.MAX_ITERATION_FACTOR
@@ -441,9 +463,17 @@ class BuildingOptimizer:
             steel, concrete, col_polys_s, beam_defs_s, is_valid_s = (
                 self._get_analysis_results(initial_segments)
             )
-            if concrete is None:
+            if (
+                steel is None
+                or concrete is None
+                or not math.isfinite(float(steel))
+                or not math.isfinite(float(concrete))
+                or float(steel) <= 0.0
+                or float(concrete) <= 0.0
+            ):
                 raise RuntimeError(
-                    "Seed configuration analysis failed. Cannot start parallel collection."
+                    "Seed configuration returned unusable material quantities. "
+                    "Cannot start parallel collection."
                 )
             fv_seed = self._extract_feature_vector(col_polys_s, beam_defs_s)
             if not fv_seed:
@@ -478,7 +508,17 @@ class BuildingOptimizer:
                 )
 
         # ── Maps job_id → (col_polys, beam_defs, new_segments) ───────────────
-        # Kept in the main process so we can do feature extraction after results
+        # The seed has already been evaluated and must never be submitted again
+        # as a generated variation. Keep the historical
+        # JSON representation unchanged so existing checkpoint hashes remain
+        # compatible.
+        seed_hash = hashlib.sha256(
+            json.dumps(initial_segments, ensure_ascii=False).encode()
+        ).hexdigest()
+        self._seen_segments_hash.add(seed_hash)
+
+        # Maps job_id to (feature_vector, new_segments). Geometry-only
+        # features are validated before the expensive TQS call.
         in_flight: Dict[int, Tuple] = {}
 
         def _generate_and_submit(pool: TQSWorkerPool) -> Optional[int]:
@@ -521,8 +561,14 @@ class BuildingOptimizer:
                 if not col_polys:
                     return None
 
+                feature_vector = self._extract_feature_vector(
+                    col_polys, beam_defs
+                )
+                if feature_vector is None:
+                    return None
+
                 job_id = pool.submit(col_polys, beam_defs)
-                in_flight[job_id] = (col_polys, beam_defs, new_segs)
+                in_flight[job_id] = (feature_vector, new_segs)
                 return job_id
 
             except Exception as gen_err:
@@ -578,7 +624,7 @@ class BuildingOptimizer:
                 entry = in_flight.pop(res.job_id, None)
                 if entry is None:
                     continue  # stale / unexpected job_id
-                col_polys, beam_defs, new_segs = entry
+                feature_vector, new_segs = entry
 
                 print(
                     f"\n[Parallel] Job #{res.job_id} from [{res.slot_name}] "
@@ -586,8 +632,17 @@ class BuildingOptimizer:
                 )
 
                 if res.success:
-                    fv = self._extract_feature_vector(col_polys, beam_defs)
-                    if fv:
+                    if not (
+                        math.isfinite(float(res.steel))
+                        and math.isfinite(float(res.concrete))
+                        and float(res.steel) > 0.0
+                        and float(res.concrete) > 0.0
+                    ):
+                        print(
+                            f"  [FAILED] Job #{res.job_id} returned a non-positive "
+                            "or non-finite material quantity."
+                        )
+                    else:
                         # Determine validity: DLL check (when enabled) OR output bounds.
                         _steel_min = getattr(ObjectiveConfig, "STEEL_MIN_KGF", None)
                         _steel_max = getattr(ObjectiveConfig, "STEEL_MAX_KGF", None)
@@ -598,10 +653,10 @@ class BuildingOptimizer:
                             (_conc_min  is not None and res.concrete < _conc_min)
                         )
                         is_valid_sample = res.is_valid and not _out_of_bounds
-                        self._clf_features.append(fv)
+                        self._clf_features.append(feature_vector)
                         self._clf_labels.append(1 if is_valid_sample else 0)
                         if is_valid_sample:
-                            feature_vectors.append(fv)
+                            feature_vectors.append(feature_vector)
                             output_values.append([res.steel])
                             if self.use_vector_input:
                                 self.generated_valid_configurations.append(
@@ -628,10 +683,6 @@ class BuildingOptimizer:
                                 f"  [INVALID] job #{res.job_id} rejected by {reason} "
                                 f"(steel={res.steel:.1f} kgf  concrete={res.concrete:.4f} m3)."
                             )
-                    else:
-                        print(
-                            f"  [WARN] Feature extraction failed for job #{res.job_id}."
-                        )
                 else:
                     print(f"  [FAILED] Job #{res.job_id}: {res.error}")
 
@@ -1167,7 +1218,6 @@ class BuildingOptimizer:
             from sklearn.linear_model import LogisticRegression
             from sklearn.pipeline import make_pipeline
             from sklearn.preprocessing import StandardScaler
-            from sklearn.model_selection import train_test_split
             import joblib, json
             if len(self._clf_features) > 0 and len(self._clf_labels) > 0:
                 n_classes = len(set(self._clf_labels))
@@ -1182,15 +1232,41 @@ class BuildingOptimizer:
                     print("\n[Step 2b/5] Training validity classifier (train/val/test split)...")
                     _clf_seed = getattr(RunConfig, 'SEED', 42)
 
-                    # 60% train / 20% val (calibra limiar) / 20% test (reporta apenas)
-                    Xc_train, Xc_temp, yc_train, yc_temp = train_test_split(
-                        self._clf_features, self._clf_labels,
-                        test_size=0.4, stratify=self._clf_labels, random_state=_clf_seed
+                    # 60% train / 20% validation / 20% untouched test. Pilot
+                    # rows already inspected during development are protected
+                    # from the final test set.
+                    Xc_all = np.asarray(self._clf_features, dtype=float)
+                    yc_all = np.asarray(self._clf_labels, dtype=int)
+                    classifier_split = classification_train_validation_test_split(
+                        yc_all,
+                        test_ratio=0.20,
+                        validation_ratio_of_development=0.25,
+                        random_state=_clf_seed,
+                        preused_development_prefix=getattr(
+                            DataSplitConfig,
+                            "PREUSED_CLASSIFIER_PREFIX_SAMPLES",
+                            0,
+                        ),
                     )
-                    Xc_val, Xc_test, yc_val, yc_test = train_test_split(
-                        Xc_temp, yc_temp,
-                        test_size=0.5, stratify=yc_temp, random_state=_clf_seed
-                    )
+                    Xc_train = Xc_all[classifier_split.train_indices]
+                    yc_train = yc_all[classifier_split.train_indices]
+                    Xc_val = Xc_all[classifier_split.validation_indices]
+                    yc_val = yc_all[classifier_split.validation_indices]
+                    Xc_test = Xc_all[classifier_split.test_indices]
+                    yc_test = yc_all[classifier_split.test_indices]
+                    classifier_manifest = classifier_split.as_manifest(yc_all)
+                    with open(
+                        self.exp_manager.get_metrics_dir()
+                        / "classifier_split_manifest.json",
+                        "w",
+                        encoding="utf-8",
+                    ) as split_file:
+                        json.dump(
+                            classifier_manifest,
+                            split_file,
+                            ensure_ascii=False,
+                            indent=2,
+                        )
                     n_inv_train = sum(1 for v in yc_train if v == 0)
                     n_inv_val = sum(1 for v in yc_val if v == 0)
                     n_inv_test = sum(1 for v in yc_test if v == 0)
@@ -1633,7 +1709,22 @@ class BuildingOptimizer:
             if not features:
                 print("Warning: Extracted feature vector is empty.")
                 return None
-            return features
+            expected_size = int(NeuralNetConfig.INPUT_SIZE)
+            if len(features) != expected_size:
+                print(
+                    "Warning: Extracted feature vector has an unexpected size "
+                    f"({len(features)} != {expected_size})."
+                )
+                return None
+            try:
+                numeric_features = [float(value) for value in features]
+            except (TypeError, ValueError):
+                print("Warning: Extracted feature vector contains non-numeric values.")
+                return None
+            if not all(math.isfinite(value) for value in numeric_features):
+                print("Warning: Extracted feature vector contains NaN or infinity.")
+                return None
+            return numeric_features
         except Exception as e:
             print(f"Error extracting feature vector: {e}. Traceback: {traceback.format_exc()}")
             return None
@@ -1806,6 +1897,15 @@ class BuildingOptimizer:
                 # Replace comma decimal separator if used in TQS output
                 steel_kgf = float(steel_value_str.replace(",", "."))
                 concrete_m3 = float(concrete_value_str.replace(",", "."))
+                if not (
+                    math.isfinite(steel_kgf)
+                    and math.isfinite(concrete_m3)
+                    and steel_kgf > 0.0
+                    and concrete_m3 > 0.0
+                ):
+                    raise ValueError(
+                        "TQS returned non-positive or non-finite material quantities."
+                    )
             except ValueError as ve:
                  print(f"      TQS Error: Could not convert extracted results ('{steel_value_str}', '{concrete_value_str}') to numbers: {ve}")
                  return None, None, False

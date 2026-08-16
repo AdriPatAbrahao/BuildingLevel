@@ -160,7 +160,7 @@ Para cada amostra de treinamento, o fluxo executado é:
 
 2. Executar processamento global (RunModel)
    ├── TQSExec.TaskFolder  → aponta para diretório do edifício
-   ├── TQSExec.TaskGlobalProc → processa vigas (modo 3) e pilares (modo 2)
+   ├── TQSExec.TaskGlobalProc → esforços em vigas (modo 1) e dimensionamento/desenho de pilares (modo 2)
    └── TQSExec.TaskStructuralReport → gera relatório RESDES.HTM
 
 3. Ler resultados (extract_material_summary)
@@ -173,7 +173,7 @@ Para cada amostra de treinamento, o fluxo executado é:
 |-------------------|-------|------------------------------------|
 | `gridSlabsTrnsf`  | 0     | Sem transferência de grelha de laje |
 | `slabs`           | 0     | Lajes não processadas individualmente |
-| `beams`           | 3     | Dimensionamento completo de vigas   |
+| `beams`           | 1     | Somente esforços; sem dimensionamento/detalhamento de armadura das vigas |
 | `columns`         | 2     | Dimensionamento completo de pilares |
 
 ### 3.4 Extração do Consumo de Materiais
@@ -223,7 +223,7 @@ Esta restrição garante que em cada nó apenas uma dimensão da seção transve
 
 ### 4.3 Discretização
 
-Durante a otimização, o vetor contínuo proposto pelo Algoritmo Genético é discretizado para o múltiplo mais próximo de `LENGTH_STEP_CM = 20 cm`, refletindo a granularidade típica de projeto estrutural:
+Durante a otimização, o vetor contínuo proposto pelo Algoritmo Genético é discretizado para o múltiplo mais próximo de `LENGTH_STEP_CM = 5 cm`. O mesmo parâmetro controla a geração das amostras, mantendo alinhados os domínios de treinamento e otimização:
 
 ```
 x_discreto = round(x_contínuo / 20) × 20
@@ -270,6 +270,9 @@ O sistema suporta dois modos:
 - `NUM_WORKERS` subprocessos, cada um com diretório isolado (`TrainBuild815_01`, `_02`, ...)
 - Janela deslizante: novos jobs são submetidos à medida que resultados chegam
 - Configuração validada atual: um worker no slot `TrainBuild815_01`
+- O número de workers deve permanecer em 1 enquanto a limpeza/recuperação
+  encerrar `NTQSHTM.EXE` pelo nome global do processo; aumentar esse valor pode
+  fazer um worker interromper a análise de outro
 - O checkpoint v3 preserva regressão, classificador, configurações válidas,
   hashes de deduplicação, estado do gerador aleatório e hash do CSV semente,
   com escrita atômica a cada 10 minutos
@@ -282,10 +285,37 @@ O sistema suporta dois modos:
 O teste 12 executou uma coleta limpa em duas etapas, sem treinamento: primeiro 10
 amostras válidas e depois retomada do mesmo checkpoint até 30. O resultado final
 foi 30 amostras válidas e 10 inválidas em 40 tentativas, sem configurações ou
-hashes duplicados, com 43 atributos finitos em todas as entradas. Os 10 registros
+hashes duplicados, com atributos finitos em todas as entradas. Os 10 registros
 da primeira etapa foram preservados exatamente após a retomada. A coleta completa
 fica liberada a partir desse checkpoint; o treinamento deve continuar separado e
 somente depois da auditoria do conjunto completo.
+
+#### Piloto de concorrência TQS
+
+Antes de elevar `ParallelConfig.NUM_WORKERS`, o script
+`scripts/validate_tqs_concurrency.py` compara as mesmas seis geometrias em uma
+cópia sequencial e em duas cópias processadas simultaneamente. O teste usa o
+checkpoint das 230 amostras apenas como fonte de geometrias, inclui o CSV
+semente como sonda de validade, não modifica o checkpoint de produção e exige:
+
+- coincidência de validade entre os modos;
+- diferença máxima de 0,5 kgf no aço e 0,001 m³ no concreto;
+- uso efetivo dos dois slots;
+- pelo menos um caso inviável para testar a DLL de erros;
+- ganho de vazão mínimo de 1,25 vez;
+- nenhuma falha ou timeout.
+
+Execução, com confirmação explícita do modo simultâneo:
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.validate_tqs_concurrency `
+  --confirm-simultaneous-tqs
+```
+
+O resultado é gravado em
+`outputs/validation/tqs_concurrency_pilot/summary.json`. Um timeout ainda pode
+encerrar globalmente todas as instâncias `NTQSHTM.EXE`; portanto qualquer timeout
+reprova o uso de dois workers na coleta definitiva.
 
 ### 5.4 Coleta da Configuração Semente
 
@@ -965,13 +995,13 @@ se prob_invalid ≥ limiar_calibrado:
 
 O Algoritmo Genético (AG) é adotado pela capacidade de:
 - Explorar espaços de busca não convexos e multidimensionais
-- Lidar com variáveis discretas (comprimentos em múltiplos de 20 cm)
+- Lidar com variáveis discretas (comprimentos em múltiplos de 5 cm)
 - Não exigir gradientes da função objetivo (que inclui chamadas ao classificador e penalidades não diferenciáveis)
 - Manter diversidade de soluções, evitando convergência prematura a ótimos locais
 
 ### 12.2 Representação da Solução
 
-Cada indivíduo da população é um vetor contínuo `x ∈ ℝᵈ` onde `d` é o número de grupos de variáveis de projeto. Os valores representam os comprimentos das seções transversais dos pilares (em cm). Durante a avaliação da função objetivo, o vetor é discretizado para múltiplos de 20 cm antes de reconstruir a geometria.
+Cada indivíduo da população é um vetor contínuo `x ∈ ℝᵈ` onde `d` é o número de grupos de variáveis de projeto. Os valores representam os comprimentos das seções transversais dos pilares (em cm). Durante a avaliação da função objetivo, o vetor é discretizado para múltiplos de 5 cm antes de reconstruir a geometria.
 
 ### 12.3 Inicialização da População
 
@@ -1199,6 +1229,7 @@ main.py
 | `TEST_SPLIT_RATIO` | 0,15 |
 | `VALIDATION_SPLIT_RATIO` | 0,20 |
 | `PREUSED_DEVELOPMENT_PREFIX_SAMPLES` | 230 (nunca entram no teste final) |
+| `PREUSED_CLASSIFIER_PREFIX_SAMPLES` | 253 (casos válidos e inválidos do piloto; nunca entram no teste final do classificador) |
 | `REGRESSION_STRATIFICATION_BINS` | 10 |
 | `LOSS_TYPE` | MSE (configurável para Huber) |
 | `WEIGHT_DECAY` | 1×10⁻⁴ |
@@ -1235,7 +1266,7 @@ main.py
 |---|---|
 | `STEEL_PRICE_KG` | R$ 100,00/kg |
 | `CONCRETE_PRICE_M3` | R$ 10,00/m³ |
-| `LENGTH_STEP_CM` | 20 cm |
+| `LENGTH_STEP_CM` | 5 cm |
 | `INVALID_PROB_THRESHOLD` | 0,5 |
 | `INVALID_COST_PENALTY` | 1.000.000 |
 

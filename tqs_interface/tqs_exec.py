@@ -55,7 +55,7 @@ def _cleanup_report_files(building_name: str = None):
 # PGLOERR-based structural error check removed (errors are read via DLL)
 
 
-def RunModel(building_name):
+def RunModel(building_name, terminate_existing_process=True):
     """
     Execute the global processing in TQS for the given building.
 
@@ -63,17 +63,22 @@ def RunModel(building_name):
     ----------
     building_name : str
         Name of the building folder inside TQS outputs.
+    terminate_existing_process : bool, optional
+        Preserve the legacy single-run cleanup when ``True``. Concurrent pilot
+        workers must pass ``False`` because terminating ``NTQSHTM.EXE`` by its
+        global image name would also terminate another building's analysis.
 
     Raises
     ------
     TQSCriticalError
         If the TQS DLL API reports critical structural errors or execution fails.
     """
-    result = subprocess.getoutput('tasklist /FI "IMAGENAME eq NTQSHTM.EXE"')
+    if terminate_existing_process:
+        result = subprocess.getoutput('tasklist /FI "IMAGENAME eq NTQSHTM.EXE"')
 
-    if "NTQSHTM.EXE" in result:
-        os.system('taskkill /F /IM NTQSHTM.EXE /T >nul 2>&1')
-        time.sleep(0.1)
+        if "NTQSHTM.EXE" in result:
+            os.system('taskkill /F /IM NTQSHTM.EXE /T >nul 2>&1')
+            time.sleep(0.1)
 
     _cleanup_report_files(building_name)
 

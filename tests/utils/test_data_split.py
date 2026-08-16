@@ -1,7 +1,10 @@
 import numpy as np
 import pytest
 
-from utils.data_split import regression_train_validation_test_split
+from utils.data_split import (
+    classification_train_validation_test_split,
+    regression_train_validation_test_split,
+)
 
 
 def _split(targets, prefix=230):
@@ -77,3 +80,40 @@ def test_manifest_declares_no_preused_test_leakage():
     assert manifest["preused_development_prefix"] == 230
     assert manifest["test_contains_preused_samples"] is False
     assert manifest["test"]["count"] == 375
+
+
+def test_classification_split_protects_preused_prefix_and_stratifies():
+    labels = np.asarray(([1] * 9 + [0]) * 40, dtype=int)
+    split = classification_train_validation_test_split(
+        labels,
+        test_ratio=0.20,
+        validation_ratio_of_development=0.25,
+        random_state=42,
+        preused_development_prefix=100,
+    )
+
+    assert not np.any(split.test_indices < 100)
+    combined = np.concatenate(
+        [split.train_indices, split.validation_indices, split.test_indices]
+    )
+    assert sorted(combined.tolist()) == list(range(len(labels)))
+    for indices in (
+        split.train_indices,
+        split.validation_indices,
+        split.test_indices,
+    ):
+        assert set(labels[indices].tolist()) == {0, 1}
+    assert split.as_manifest(labels)["test_contains_preused_samples"] is False
+
+
+def test_classification_split_rejects_prefix_that_leaves_no_final_test():
+    labels = np.asarray(([1] * 9 + [0]) * 10, dtype=int)
+
+    with pytest.raises(ValueError, match="not enough new classifier samples"):
+        classification_train_validation_test_split(
+            labels,
+            test_ratio=0.20,
+            validation_ratio_of_development=0.25,
+            random_state=42,
+            preused_development_prefix=85,
+        )

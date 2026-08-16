@@ -33,7 +33,10 @@ Usage
 
     from tqs_interface.tqs_worker_pool import TQSWorkerPool
 
-    with TQSWorkerPool(num_workers=3) as pool:
+    with TQSWorkerPool(
+        num_workers=3,
+        allow_simultaneous_tqs=True,
+    ) as pool:
         # Sliding-window dispatch — submit one job per worker upfront,
         # then replenish as results arrive.
         job_id = pool.submit(column_polygons, beam_definitions)
@@ -46,6 +49,8 @@ Usage
 from __future__ import annotations
 
 import logging
+import hashlib
+import math
 import multiprocessing as mp
 import threading as _threading
 import time
@@ -76,6 +81,7 @@ class WorkerResult:
     is_valid:  bool            = True
     error:     Optional[str]   = None
     elapsed:   float           = 0.0
+    report_sha256: Optional[str] = None
 
     @property
     def success(self) -> bool:
@@ -184,6 +190,7 @@ def _worker_main(
     tqs_base: str,
     timeout_sec: int,
     validity_check_dll: bool = False,
+    allow_simultaneous_tqs: bool = False,
 ) -> None:
     """
     Long-lived worker subprocess.
@@ -283,7 +290,14 @@ def _worker_main(
             #    Wrapped with a hard timeout: if TQS hangs (modal dialog,
             #    silent crash), NTQSHTM.EXE is killed and TimeoutError is
             #    raised so the worker always returns a result to the queue.
-            _run_model_with_timeout(RunModel, slot_name, timeout_sec)
+            if allow_simultaneous_tqs:
+                def _run_without_global_pre_kill(name: str) -> None:
+                    RunModel(name, terminate_existing_process=False)
+
+                run_model = _run_without_global_pre_kill
+            else:
+                run_model = RunModel
+            _run_model_with_timeout(run_model, slot_name, timeout_sec)
             TQSUtil.writef(
                 f"[{slot_name}] RunModel issued for job #{job_id}."
             )
@@ -308,6 +322,17 @@ def _worker_main(
 
             steel    = float(str(raw[0]).replace(",", "."))
             concrete = float(str(raw[1]).replace(",", "."))
+            report_sha256 = hashlib.sha256(results_path.read_bytes()).hexdigest()
+            if not (
+                math.isfinite(steel)
+                and math.isfinite(concrete)
+                and steel > 0.0
+                and concrete > 0.0
+            ):
+                raise ValueError(
+                    "TQS returned non-positive or non-finite material "
+                    f"quantities (steel={steel!r}, concrete={concrete!r})"
+                )
 
             # ── 5. Optional structural-validity check (DLL-based) ─────────
             is_valid = _evaluate_structural_validity(
@@ -331,6 +356,7 @@ def _worker_main(
                     job_id=job_id, slot_name=slot_name,
                     steel=steel, concrete=concrete,
                     is_valid=is_valid, elapsed=elapsed,
+                    report_sha256=report_sha256,
                 )
             )
 
@@ -365,7 +391,7 @@ class TQSWorkerPool:
     ----------
     num_workers : int
         Number of parallel workers / isolated building directories.
-        Recommended range: 2–6 (each consumes a TQS licence seat and RAM).
+        Keep at one for production until simultaneous execution is validated.
     base_name : str
         Prefix for slot names (default: ``"OptimBuilding"``).
     tqs_base_dir : Path, optional
@@ -375,12 +401,20 @@ class TQSWorkerPool:
         (``LIMPA ESPACIAL.DAT``, etc.).  Defaults to ``PROJECT_ROOT``.
     timeout_sec : int
         Per-job timeout (seconds) waiting for RESDES.HTM after RunModel.
+    allow_simultaneous_tqs : bool
+        Explicit safety gate for more than one TQS process. This disables the
+        global pre-run ``NTQSHTM.EXE`` termination inside each worker. A timeout
+        still terminates that image globally, so simultaneous mode must first
+        pass the isolated concurrency pilot.
 
     Examples
     --------
     ::
 
-        with TQSWorkerPool(num_workers=3) as pool:
+        with TQSWorkerPool(
+            num_workers=3,
+            allow_simultaneous_tqs=True,
+        ) as pool:
             results = pool.map([(col_polys, beam_defs), ...])
     """
 
@@ -392,6 +426,7 @@ class TQSWorkerPool:
         dat_dir:            Optional[Path] = None,
         timeout_sec:        int            = 180,
         validity_check_dll: bool           = False,
+        allow_simultaneous_tqs: bool       = False,
     ) -> None:
         self.num_workers        = num_workers
         self.base_name          = base_name
@@ -399,6 +434,15 @@ class TQSWorkerPool:
         self.dat_dir            = Path(dat_dir)       if dat_dir      else PROJECT_ROOT
         self.timeout_sec        = timeout_sec
         self.validity_check_dll = validity_check_dll
+        self.allow_simultaneous_tqs = bool(allow_simultaneous_tqs)
+
+        if self.num_workers < 1:
+            raise ValueError("num_workers must be at least one.")
+        if self.num_workers > 1 and not self.allow_simultaneous_tqs:
+            raise ValueError(
+                "Multiple TQS workers require allow_simultaneous_tqs=True. "
+                "Use it only in the isolated concurrency validation first."
+            )
 
         # Slot names:  OptimBuilding_01, OptimBuilding_02, …
         self.slot_names: List[str] = [
@@ -428,6 +472,20 @@ class TQSWorkerPool:
         Returns *self* so the pool can be used as a context manager or
         chained: ``pool = TQSWorkerPool(2).start()``.
         """
+        if self.allow_simultaneous_tqs:
+            import subprocess as _sp
+
+            running = _sp.run(
+                ["tasklist", "/FI", "IMAGENAME eq NTQSHTM.EXE"],
+                capture_output=True,
+                text=True,
+            )
+            if "NTQSHTM.EXE" in running.stdout.upper():
+                raise RuntimeError(
+                    "An NTQSHTM.EXE process is already running; concurrent "
+                    "pilot startup was aborted instead of terminating it."
+                )
+
         log.info("TQSWorkerPool: starting %d worker(s)...", self.num_workers)
         print(
             f"[TQSWorkerPool] Starting {self.num_workers} worker(s) "
@@ -441,6 +499,7 @@ class TQSWorkerPool:
                     slot, jq, self._result_q,
                     str(self.dat_dir), str(self.tqs_base_dir),
                     self.timeout_sec, self.validity_check_dll,
+                    self.allow_simultaneous_tqs,
                 ),
                 name=f"TQSWorker-{slot}",
                 daemon=True,

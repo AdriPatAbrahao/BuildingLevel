@@ -3,6 +3,7 @@ import pandas as pd
 from shapely.geometry import LineString, Polygon
 from config.constants import DEFAULT_BEAM_WIDTH_CM, SPLIT_BEAM_COLUMN_THRESHOLD_CM
 from config.paths import SEED_VECTOR_CSV
+from config.settings import ObjectiveConfig
 from config.vector_config import VectorConfig
 import random
 import copy
@@ -239,7 +240,9 @@ class LengthProcessor:
     def generate_variation(self, segments: List[dict], variation_strategy: str = "random") -> List[dict]:
         new_segments = copy.deepcopy(segments)
         made_changes = False
-        step = 5.0 # Variação em múltiplos de 5 cm
+        step = float(ObjectiveConfig.LENGTH_STEP_CM)
+        if step <= 0.0:
+            raise ValueError("ObjectiveConfig.LENGTH_STEP_CM must be positive.")
 
         if variation_strategy in {"random", "upper_biased"}:
             # ------------------------------------------------------------------

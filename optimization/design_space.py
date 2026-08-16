@@ -135,7 +135,8 @@ class DesignSpace:
 
         For each conflicting (x_group, y_group) pair: whichever group deviates
         less from its initial (lower-bound) length is reset to that initial value.
-        When both deviate equally (including both at initial), neither is modified.
+        A positive tie keeps the x-group and resets the y-group; a tie at the
+        initial dimensions has no geometric effect.
 
         Parameters
         ----------
@@ -161,7 +162,6 @@ class DesignSpace:
                 # y-group grows more → reset x-group to initial seed lengths
                 for row_idx in self.group_indices[x_vidx]:
                     lengths[row_idx] = self._base_lengths[row_idx]
-            # if x_dev == y_dev (both at initial or tied): no change needed
         return lengths
 
     def _validate_csv(self):

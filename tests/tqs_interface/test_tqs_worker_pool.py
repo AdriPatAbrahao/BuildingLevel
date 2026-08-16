@@ -1,6 +1,9 @@
 import pytest
 
-from tqs_interface.tqs_worker_pool import _evaluate_structural_validity
+from tqs_interface.tqs_worker_pool import (
+    TQSWorkerPool,
+    _evaluate_structural_validity,
+)
 
 
 class FakeErrorReader:
@@ -51,3 +54,8 @@ def test_required_validity_check_uses_critical_errors(errors, expected):
 
     assert _evaluate_structural_validity(reader, "Slot_01", required=True) is expected
     assert reader.calls == 1
+
+
+def test_multiple_workers_require_explicit_simultaneous_tqs_gate():
+    with pytest.raises(ValueError, match="allow_simultaneous_tqs=True"):
+        TQSWorkerPool(num_workers=2)
