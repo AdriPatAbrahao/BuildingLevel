@@ -334,6 +334,12 @@ class BuildingOptimizer:
         print(f"Validation passed: {num_samples} samples collected.")
         print(f"Feature vector size: {num_features}")
         print(f"Output vector size:  {num_outputs} ({'Steel only' if num_outputs==1 else 'Steel & Concrete'})")
+        expected_features = int(NeuralNetConfig.INPUT_SIZE)
+        if num_features != expected_features:
+            raise RuntimeError(
+                "Collected feature size differs from NeuralNetConfig.INPUT_SIZE "
+                f"({num_features} != {expected_features})."
+            )
 
     def _save_results(self):
         """Saves generated configurations or other desired results."""
@@ -906,6 +912,7 @@ class BuildingOptimizer:
         obj = {
             'checkpoint_version': 3,
             'feature_schema_version': int(NeuralNetConfig.FEATURE_SCHEMA_VERSION),
+            'feature_names': FeatureEngineer.feature_names(),
             'timestamp': time.time(),
             'current_iteration': (
                 self.current_iteration
@@ -959,6 +966,13 @@ class BuildingOptimizer:
             raise RuntimeError(
                 "Checkpoint feature schema differs from the current extractor "
                 f"(checkpoint={stored_feature_schema!r}, current={current_feature_schema}); "
+                "resume aborted."
+            )
+        stored_feature_names = checkpoint.get('feature_names')
+        current_feature_names = FeatureEngineer.feature_names()
+        if stored_feature_names != current_feature_names:
+            raise RuntimeError(
+                "Checkpoint feature names differ from the current extractor; "
                 "resume aborted."
             )
         return checkpoint

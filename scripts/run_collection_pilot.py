@@ -18,6 +18,7 @@ from TQS import TQSBuild
 
 from config.constants import DEFAULT_BEAM_WIDTH_CM
 from config.paths import PROJECT_ROOT, SEED_VECTOR_CSV, TQS_OUTPUT_DIR
+from config.settings import NeuralNetConfig
 from config.vector_config import VectorConfig
 from geometry.length_input_processor import LengthProcessor
 from optimization.design_space import DesignSpace
@@ -126,6 +127,12 @@ def run_pilot(args: argparse.Namespace) -> dict[str, Any]:
     sample_dir.mkdir(exist_ok=True)
 
     seed_path = Path(args.seed_csv).resolve()
+    feature_schema_version = int(NeuralNetConfig.FEATURE_SCHEMA_VERSION)
+    feature_names = FeatureEngineer.feature_names()
+    if len(feature_names) != int(NeuralNetConfig.INPUT_SIZE):
+        raise RuntimeError(
+            "Feature name count differs from NeuralNetConfig.INPUT_SIZE."
+        )
     design_space = DesignSpace(seed_path)
     processor = LengthProcessor(str(seed_path))
     candidates = _candidate_vectors(design_space, args.samples, args.random_seed)
@@ -142,6 +149,18 @@ def run_pilot(args: argparse.Namespace) -> dict[str, Any]:
         checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
         if checkpoint.get("seed_sha256") != _sha256(seed_path):
             raise RuntimeError("Checkpoint seed differs from the current seed CSV.")
+        if checkpoint.get("feature_schema_version") != feature_schema_version:
+            raise RuntimeError(
+                "Checkpoint feature schema differs from the current schema."
+            )
+        if checkpoint.get("feature_names") != feature_names:
+            raise RuntimeError(
+                "Checkpoint feature names differ from the current feature vector."
+            )
+        if checkpoint.get("target_samples") != args.samples:
+            raise RuntimeError(
+                "Checkpoint target sample count differs from the requested pilot."
+            )
         records = checkpoint.get("samples", [])
 
     with TQSWorkerPool(
@@ -161,6 +180,11 @@ def run_pilot(args: argparse.Namespace) -> dict[str, Any]:
                 raise RuntimeError(f"Sample {sample_index} produced no columns.")
 
             features = FeatureEngineer(columns, beams).extract_features()
+            if len(features) != len(feature_names):
+                raise RuntimeError(
+                    f"Sample {sample_index} feature count differs from schema v"
+                    f"{feature_schema_version}."
+                )
             geometric_concrete = get_geometric_concrete_volume(columns, beams)
             job_id = pool.submit(columns, beams)
             result = pool.get_result(timeout=float(args.timeout) + 60.0)
@@ -224,6 +248,8 @@ def run_pilot(args: argparse.Namespace) -> dict[str, Any]:
                     "completed_samples": len(records),
                     "seed_csv": str(seed_path),
                     "seed_sha256": _sha256(seed_path),
+                    "feature_schema_version": feature_schema_version,
+                    "feature_names": feature_names,
                     "slot": slot_name,
                     "dll_required": True,
                     "samples": records,
@@ -239,6 +265,8 @@ def run_pilot(args: argparse.Namespace) -> dict[str, Any]:
     valid_records = [record for record in records if record["is_valid"]]
     invalid_records = [record for record in records if not record["is_valid"]]
     dataset = {
+        "feature_schema_version": feature_schema_version,
+        "feature_names": feature_names,
         "classifier_features": [record["features"] for record in records],
         "classifier_labels": [1 if record["is_valid"] else 0 for record in records],
         "regression_features": [record["features"] for record in valid_records],
@@ -254,6 +282,8 @@ def run_pilot(args: argparse.Namespace) -> dict[str, Any]:
         "valid_samples": len(valid_records),
         "invalid_samples": len(invalid_records),
         "feature_count": len(records[0]["features"]) if records else 0,
+        "feature_schema_version": feature_schema_version,
+        "feature_names": feature_names,
         "slot": slot_name,
         "worker_count": 1,
         "dll_required": True,

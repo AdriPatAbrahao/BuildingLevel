@@ -714,7 +714,35 @@ O sistema gera automaticamente os seguintes gráficos diagnósticos no diretóri
 | **Heatmap de correlação** | Matriz de correlação de Pearson entre features + target |
 | **Normas de gradiente** | Evolução das normas L2 por camada ao longo do treinamento |
 
-### 10.3 Artefatos Persistidos por Experimento
+### 10.3 Triagem Preliminar de Importância antes do Treinamento Final
+
+Após a coleta intermediária de 230 amostras válidas no schema v11, foi executada
+uma triagem independente da DNN final. Um `ExtraTreesRegressor` temporário foi
+ajustado apenas dentro dos folds, com:
+
+- validação cruzada `5 folds × 3 repetições`;
+- importância por permutação medida pelo aumento do MAE fora da amostra;
+- ablação pareada dos sete blocos de features;
+- 50 reamostragens bootstrap sobre um conjunto retido;
+- SHAP calculado de forma cruzada como confirmação secundária.
+
+O modelo temporário apresentou `MAE = 20,23 ± 2,36 kgf` e `R² médio = 0,964`.
+`columns_total_area_cm2` e `columns_mean_shape_factor` foram as únicas features
+com importância individual forte e positiva em todos os critérios de
+estabilidade. `columns_min_area_cm2` apresentou sinal secundário. As demais
+features tiveram importância individual fraca ou inconclusiva.
+
+A ablação por blocos mostrou, entretanto, que descritores geométricos
+correlacionados se substituem quando o modelo é reajustado. O bloco de
+distribuição espacial teve a maior contribuição conjunta entre os blocos
+secundários, embora pequena. Por esse motivo, nenhuma feature foi removida no
+schema v11: importância preditiva não equivale a causalidade estrutural, e a
+orientação e a posição da rigidez continuam fisicamente relevantes. A decisão
+deve ser repetida com a DNN e conjunto de teste finais. A importância do
+classificador foi adiada porque a coleta intermediária contém somente 23 casos
+inválidos.
+
+### 10.4 Artefatos Persistidos por Experimento
 
 Cada execução de treinamento cria um diretório autocontido em `outputs/experiments/<timestamp>/` com:
 
