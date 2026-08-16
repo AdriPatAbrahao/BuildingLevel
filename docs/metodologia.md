@@ -745,6 +745,62 @@ O sistema gera automaticamente os seguintes gráficos diagnósticos no diretóri
 | **Heatmap de correlação** | Matriz de correlação de Pearson entre features + target |
 | **Normas de gradiente** | Evolução das normas L2 por camada ao longo do treinamento |
 
+#### 10.2.1 Padrão editorial das figuras
+
+Todas as figuras destinadas à tese usam o estilo centralizado em
+`visualization/thesis_style.py`. Os textos internos são escritos em inglês
+técnico e as figuras compostas recebem identificadores `(a)`, `(b)`, etc. A
+paleta atribui papéis semânticos fixos: azul-marinho (`#1B3A5C`) para dados
+principais, vermelho-tijolo (`#8C2F1B`) para referências e limiares, e azul
+acinzentado (`#5C7A99`) apenas para uma terceira categoria real. Grandezas
+sequenciais usam o mapa uniforme `thesis_navy`, construído de `#1B3A5C` a
+`#A9BCCB`; a matriz de correlação constitui exceção por exigir uma escala
+divergente centrada em zero.
+Cada figura é exportada automaticamente em dois formatos com o mesmo nome-base:
+
+- PNG a 300 dpi, para inspeção e inserção em editores que exigem imagem raster;
+- PDF vetorial com fontes incorporáveis, preferencial para a versão final da tese.
+
+Títulos são mantidos curtos, em 14 pt e negrito. Métricas e informações
+auxiliares usam 11 pt e peso normal; rótulos de eixos usam 12 pt, ticks e
+legendas usam 10 pt, e anotações usam 9–10 pt. Essa hierarquia preserva a
+legibilidade após o redimensionamento para a largura da página. O grid é restrito
+a linhas horizontais leves, exceto quando a própria representação exige outra
+estrutura visual.
+
+#### 10.2.2 Regeneração das figuras sem novo treinamento
+
+Cada experimento preserva os dados numéricos usados nas figuras, além dos PNGs
+e PDFs. A série de treinamento é gravada incrementalmente em
+`metrics/epochs.ndjson`, enquanto `metrics/training_summary.json` registra a
+melhor época, a menor perda de validação, o número de épocas executadas e o
+tempo total. Os arrays bruto e normalizado dos três subconjuntos permanecem em
+`arrays.npz`.
+
+As avaliações finais são armazenadas em um contrato versionado:
+
+- `metrics/figure_data.npz`: valores numéricos necessários para reconstrução;
+- `metrics/figure_data_manifest.json`: versão, shapes, tipos, unidades e
+  definições semânticas;
+- `metrics/regression_test_predictions.csv`: valores TQS, predições, resíduos e
+  erros do conjunto de teste;
+- `metrics/classifier_test_predictions.csv`: classes reais e previstas,
+  probabilidade de inviabilidade e limiar aplicado.
+
+Depois de modificar o código de visualização, as figuras independentes do
+modelo podem ser reconstruídas sem carregar ou treinar novamente a rede:
+
+```powershell
+python -m visualization.nn_diagnostics --exp "outputs/experiments/<experimento>"
+```
+
+Um diretório alternativo pode ser informado com `--out`. O comando reconstrói
+curvas de treinamento, gráficos do regressor, matriz de confusão, ROC e
+diagnósticos de cobertura diretamente dos artefatos salvos. PFI, PDP e SHAP são
+análises dependentes do modelo; seus PNGs/PDFs originais permanecem no
+experimento e, se precisarem ser recalculados, utilizam o modelo e a pipeline
+salvos, sem repetir o treinamento.
+
 ### 10.3 Triagem Preliminar de Importância antes do Treinamento Final
 
 Após a coleta intermediária de 230 amostras válidas no schema v11, foi executada
@@ -882,15 +938,22 @@ Para penalizar automaticamente estas configurações, um **classificador binári
 
 - **Modelo:** Regressão Logística (`sklearn.linear_model.LogisticRegression`, `class_weight='balanced'`, `max_iter=1000`), precedida por um `StandardScaler` no mesmo `Pipeline` (`sklearn.pipeline.make_pipeline`)
 - **Features:** vetor de 23 features, normalizado pelo `StandardScaler` interno do pipeline antes de entrar no classificador
-- **Split:** 80/20 treino/teste, estratificado por classe (`train_test_split(..., stratify=y, test_size=0.2)`)
-- **Métricas avaliadas:** Acurácia, Precisão, Recall, F1-score, Matriz de Confusão, Curva ROC/AUC
+- **Split:** 60% treino, 20% validação e 20% teste, estratificado por classe. A validação é usada somente para calibrar o limiar; o teste permanece fora de qualquer decisão de ajuste.
+- **Limiar:** escolhido na validação pelo índice de Youden sobre `P(inviável)` e depois congelado.
+- **Métricas finais:** calculadas apenas no teste com `inviável` como classe positiva: Acurácia, Precisão, Recall, F1-score e ROC AUC.
+- **Erro crítico de segurança:** quantidade e proporção de amostras realmente inviáveis classificadas como viáveis, correspondente à célula `[0, 1]` da matriz de confusão.
+
+O arquivo `classifier_test.json` registra as métricas da regra final e
+`roc_curve_test.json` contém a curva ROC do teste. `roc_curve.json` contém apenas
+a curva da validação usada para selecionar o limiar e não deve ser apresentada
+como desempenho final.
 
 ### 11.3 Uso na Otimização
 
-Durante a otimização, o classificador retorna `prob_invalid = P(classe=0 | x)`. A função objetivo adiciona uma penalidade se:
+Durante a otimização, o classificador retorna `prob_invalid = P(classe=0 | x)`. A função objetivo usa o mesmo limiar calibrado e persistido em `validity_threshold.json`. O valor `INVALID_PROB_THRESHOLD = 0,5` é apenas o fallback quando não existe um artefato calibrado:
 
 ```
-se prob_invalid ≥ INVALID_PROB_THRESHOLD (padrão: 0,5):
+se prob_invalid ≥ limiar_calibrado:
     custo += INVALID_COST_PENALTY (padrão: 1.000.000)
 ```
 

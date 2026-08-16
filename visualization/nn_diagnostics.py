@@ -37,6 +37,28 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
 
+from utils.classifier_evaluation import (
+    INVALID_LABEL,
+    invalid_probability_index,
+    validity_labels_from_invalid_probability,
+)
+from utils.plot_data_store import PlotDataStore
+from visualization.thesis_style import (
+    COLORS,
+    FULL_WIDTH,
+    ANNOTATION_SIZE,
+    LEGEND_SIZE,
+    SEQUENTIAL_CMAP,
+    SINGLE_COLUMN,
+    SQUARE,
+    SUBTITLE_SIZE,
+    THESIS_DPI,
+    TWO_PANEL,
+    add_panel_labels,
+    apply_thesis_style,
+    save_thesis_figure,
+)
+
 # ── optional but strongly recommended ─────────────────────────────────────────
 try:
     import seaborn as sns
@@ -48,7 +70,6 @@ except ImportError:
 try:
     from sklearn.metrics import (
         confusion_matrix,
-        ConfusionMatrixDisplay,
         roc_curve,
         auc,
         mean_absolute_error,
@@ -61,44 +82,33 @@ except ImportError:
     warnings.warn("scikit-learn not found — confusion matrix and ROC plots disabled.")
 
 # ── colour palette & theme ─────────────────────────────────────────────────────
-_PRIMARY   = "#2563EB"   # blue
-_SECONDARY = "#F59E0B"   # amber
-_ACCENT    = "#10B981"   # emerald
-_DANGER    = "#EF4444"   # red
-_MUTED     = "#94A3B8"   # slate-400
-_BG        = "#F8FAFC"   # near-white
+_PRIMARY   = COLORS["primary"]
+_SECONDARY = COLORS["accent"]
+_ACCENT    = COLORS["secondary"]
+_DANGER    = COLORS["accent"]
+_MUTED     = COLORS["gray"]
+_BG        = COLORS["background"]
 
-_FIG_DPI   = 150
+_FIG_DPI   = THESIS_DPI
 _FONT_SIZE = 11
 
 
 def _apply_theme():
     """Apply a clean, consistent visual theme to all subsequent figures."""
-    if _SEABORN:
-        sns.set_theme(
-            style="whitegrid",
-            font_scale=1.05,
-            rc={
-                "axes.facecolor": _BG,
-                "figure.facecolor": "white",
-                "grid.color": "#E2E8F0",
-                "axes.spines.top": False,
-                "axes.spines.right": False,
-            },
-        )
-    plt.rcParams.update(
-        {
-            "font.family": "DejaVu Sans",
-            "font.size": _FONT_SIZE,
-            "axes.titlesize": _FONT_SIZE + 2,
-            "axes.labelsize": _FONT_SIZE,
-            "legend.fontsize": _FONT_SIZE - 1,
-            "figure.dpi": _FIG_DPI,
-            "savefig.dpi": _FIG_DPI,
-            "savefig.bbox": "tight",
-            "savefig.facecolor": "white",
-        }
-    )
+    apply_thesis_style()
+
+
+def _mean_is_visually_distinct_from_zero(
+    values: np.ndarray,
+    bin_count: int,
+) -> bool:
+    """Return whether separate zero/mean lines are resolvable at histogram scale."""
+    values = np.asarray(values, dtype=float)
+    value_range = float(np.ptp(values))
+    if not np.isfinite(value_range) or value_range <= 0:
+        return False
+    half_bin_width = value_range / (2.0 * max(int(bin_count), 1))
+    return abs(float(np.mean(values))) > half_bin_width
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -159,21 +169,26 @@ class NNDiagnosticsPlotter:
         has_lr     = any(v is not None for v in lr_vals)
 
         nrows = 2 if has_lr else 1
-        fig, axes = plt.subplots(nrows, 1, figsize=(11, 4 * nrows), sharex=True)
+        fig, axes = plt.subplots(
+            nrows,
+            1,
+            figsize=(FULL_WIDTH[0], 3.0 * nrows),
+            sharex=True,
+        )
         if nrows == 1:
             axes = [axes]
 
         # ── loss panel ──────────────────────────────────────────────────────
         ax = axes[0]
-        ax.plot(epochs, train_loss, color=_PRIMARY,    lw=2, label="Treino")
-        ax.plot(epochs, val_loss,   color=_SECONDARY,  lw=2, label="Validação", linestyle="--")
+        ax.plot(epochs, train_loss, color=_PRIMARY,    lw=2, label="Training")
+        ax.plot(epochs, val_loss,   color=_SECONDARY,  lw=2, label="Validation", linestyle="--")
 
         best_epoch = int(np.argmin(val_loss))
         ax.axvline(epochs[best_epoch], color=_ACCENT, lw=1.2, linestyle=":",
-                   label=f"Melhor val (época {epochs[best_epoch]})")
+                   label=f"Best validation loss (epoch {epochs[best_epoch]})")
 
         ax.set_ylabel("Loss")
-        ax.set_title("Curvas de Aprendizado — Loss por Época")
+        ax.set_title("Learning Curves — Loss by Epoch")
         ax.legend()
         ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.4f"))
 
@@ -182,15 +197,15 @@ class NNDiagnosticsPlotter:
             ax2 = axes[1]
             lr_clean = [v if v is not None else float("nan") for v in lr_vals]
             ax2.semilogy(epochs, lr_clean, color=_DANGER, lw=1.8)
-            ax2.set_ylabel("Learning Rate (escala log)")
-            ax2.set_title("Schedule da Taxa de Aprendizado")
-            ax2.set_xlabel("Época")
+            ax2.set_ylabel("Learning Rate (log scale)")
+            ax2.set_title("Learning Rate Schedule")
+            ax2.set_xlabel("Epoch")
         else:
-            axes[0].set_xlabel("Época")
+            axes[0].set_xlabel("Epoch")
 
         plt.tight_layout()
         out = self.output_dir / "learning_curves.png"
-        plt.savefig(out)
+        save_thesis_figure(fig, out)
         plt.close("all")
         print(f"[NNDiagnostics] Salvo: {out}")
         return out
@@ -202,7 +217,7 @@ class NNDiagnosticsPlotter:
         self,
         y_true: np.ndarray,
         y_pred: np.ndarray,
-        label: str = "Aço (kgf)",
+        label: str = "Reinforcement steel weight (kgf)",
         filename_prefix: str = "steel",
     ) -> Path:
         """
@@ -222,57 +237,92 @@ class NNDiagnosticsPlotter:
         mae = mean_absolute_error(y_true, y_pred) if _SKLEARN else float("nan")
         rmse = float(np.sqrt(np.mean(residuals ** 2)))
 
-        fig, (ax_scatter, ax_hist) = plt.subplots(1, 2, figsize=(14, 5))
-        fig.suptitle(
-            f"Regressão — {label}   |   R² = {r2:.3f}   MAE = {mae:.1f}   RMSE = {rmse:.1f}",
-            fontsize=_FONT_SIZE + 2, fontweight="bold",
-        )
+        fig, (ax_scatter, ax_hist) = plt.subplots(1, 2, figsize=(8.2, 3.7))
+        fig.suptitle("Reinforcement Steel Regressor")
 
         # ── scatter ──────────────────────────────────────────────────────────
         lim_min = min(y_true.min(), y_pred.min()) * 0.97
         lim_max = max(y_true.max(), y_pred.max()) * 1.03
 
         ax_scatter.scatter(y_true, y_pred, s=18, alpha=0.55,
-                           color=_PRIMARY, edgecolors="none", label="Amostras de teste")
+                           color=_PRIMARY, edgecolors="none", label="Test samples")
         ax_scatter.plot([lim_min, lim_max], [lim_min, lim_max],
-                        color=_DANGER, lw=1.5, linestyle="--", label="Previsão perfeita")
+                        color=_DANGER, lw=1.5, linestyle="--", label="1:1 reference line")
 
         # ±10 % bands
         ax_scatter.fill_between(
             [lim_min, lim_max],
             [lim_min * 0.9, lim_max * 0.9],
             [lim_min * 1.1, lim_max * 1.1],
-            alpha=0.08, color=_SECONDARY, label="Faixa ±10 %",
+            alpha=0.08, color=_SECONDARY, label="±10% error band",
         )
 
         ax_scatter.set_xlim(lim_min, lim_max)
         ax_scatter.set_ylim(lim_min, lim_max)
-        ax_scatter.set_xlabel(f"Real — {label}")
-        ax_scatter.set_ylabel(f"Previsto — {label}")
-        ax_scatter.set_title("Real vs Previsto")
-        ax_scatter.legend(fontsize=_FONT_SIZE - 1)
+        unit = label.split("(")[-1].rstrip(")")
+        ax_scatter.set_xlabel(f"Observed (TQS) [{unit}]")
+        ax_scatter.set_ylabel(f"Predicted (DNN) [{unit}]")
+        ax_scatter.set_title("Observed (TQS) vs. Predicted")
+        ax_scatter.legend(loc="lower right", fontsize=_FONT_SIZE - 1)
         ax_scatter.set_aspect("equal")
+        ax_scatter.text(
+            0.03,
+            0.97,
+            f"R² = {r2:.3f}\nMAE = {mae:.1f} kgf\nRMSE = {rmse:.1f} kgf",
+            transform=ax_scatter.transAxes,
+            ha="left",
+            va="top",
+            fontsize=_FONT_SIZE - 2,
+            bbox={"boxstyle": "round,pad=0.3", "facecolor": "white", "edgecolor": COLORS["light_gray"], "alpha": 0.92},
+        )
 
         # ── residuals histogram ───────────────────────────────────────────────
         n_bins = max(20, min(60, int(np.sqrt(len(residuals)))))
         if _SEABORN:
             sns.histplot(residuals, bins=n_bins, ax=ax_hist,
-                         color=_ACCENT, edgecolor="white", alpha=0.85, kde=True,
+                         color=_PRIMARY, edgecolor="white", alpha=0.85, kde=True,
                          kde_kws={"linewidth": 2})
         else:
-            ax_hist.hist(residuals, bins=n_bins, color=_ACCENT, edgecolor="white", alpha=0.85)
+            ax_hist.hist(residuals, bins=n_bins, color=_PRIMARY, edgecolor="white", alpha=0.85)
 
-        ax_hist.axvline(0, color=_DANGER, lw=1.8, linestyle="--", label="Resíduo = 0")
-        ax_hist.axvline(residuals.mean(), color=_SECONDARY, lw=1.5, linestyle=":",
-                        label=f"Média = {residuals.mean():.1f}")
-        ax_hist.set_xlabel(f"Resíduo  (Real − Previsto)  [{label.split('(')[-1].rstrip(')')}]")
-        ax_hist.set_ylabel("Contagem")
-        ax_hist.set_title("Distribuição dos Resíduos")
-        ax_hist.legend(fontsize=_FONT_SIZE - 1)
+        # Freeze the autoscaled y range before adding reference lines. Limiting
+        # the lines to 96% avoids a dashed cap being rendered against the top edge.
+        data_hist_top = ax_hist.get_ylim()[1]
+        final_hist_ylim = (0.0, data_hist_top * 1.35)
+        ax_hist.set_ylim(final_hist_ylim)
+        reference_line_top = min(0.96, data_hist_top * 1.02 / final_hist_ylim[1])
+        mean_residual = float(residuals.mean())
+        mean_is_distinct = _mean_is_visually_distinct_from_zero(residuals, n_bins)
+        zero_label = (
+            "Zero residual"
+            if mean_is_distinct
+            else "Zero residual (mean ≈ 0)"
+        )
+        ax_hist.axvline(
+            0, ymin=0.0, ymax=reference_line_top, color=_DANGER, lw=1.8,
+            linestyle="--", label=zero_label, clip_on=True,
+            dash_capstyle="butt",
+        )
+        if mean_is_distinct:
+            ax_hist.axvline(
+                mean_residual, ymin=0.0, ymax=reference_line_top,
+                color=_SECONDARY, lw=1.5, linestyle=":",
+                label=f"Mean residual = {mean_residual:.1f}", clip_on=True,
+                dash_capstyle="butt",
+            )
+        ax_hist.set_xlabel(f"Residual (Observed − Predicted) [{unit}]")
+        ax_hist.set_ylabel("Count")
+        ax_hist.set_title("Residual Distribution")
+        ax_hist.legend(
+            loc="upper center", ncol=1, fontsize=_FONT_SIZE - 1,
+            framealpha=1.0, facecolor="white",
+            edgecolor=COLORS["light_gray"],
+        )
 
-        plt.tight_layout()
+        add_panel_labels([ax_scatter, ax_hist])
+        fig.subplots_adjust(left=0.09, right=0.98, bottom=0.18, top=0.79, wspace=0.31)
         out = self.output_dir / f"{filename_prefix}_scatter_residuals.png"
-        plt.savefig(out)
+        save_thesis_figure(fig, out)
         plt.close("all")
         print(f"[NNDiagnostics] Salvo: {out}")
         return out
@@ -285,6 +335,7 @@ class NNDiagnosticsPlotter:
         y_true: Sequence[int],
         y_pred: Sequence[int],
         class_names: Optional[List[str]] = None,
+        invalid_threshold: Optional[float] = None,
     ) -> Optional[Path]:
         """
         Plot a normalised + raw count confusion matrix using seaborn heatmap.
@@ -301,38 +352,62 @@ class NNDiagnosticsPlotter:
 
         y_true = np.asarray(y_true, dtype=int)
         y_pred = np.asarray(y_pred, dtype=int)
-        class_names = class_names or ["Inválido", "Válido"]
+        class_names = class_names or ["Infeasible", "Feasible"]
 
-        cm     = confusion_matrix(y_true, y_pred)
-        cm_pct = cm.astype(float) / cm.sum(axis=1, keepdims=True) * 100
+        cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
+        cm_pct = np.divide(
+            cm.astype(float),
+            cm.sum(axis=1, keepdims=True),
+            out=np.zeros_like(cm, dtype=float),
+            where=cm.sum(axis=1, keepdims=True) != 0,
+        ) * 100
 
         acc = accuracy_score(y_true, y_pred) if _SKLEARN else float("nan")
-
-        fig, axes = plt.subplots(1, 2, figsize=(13, 5))
-        fig.suptitle(
-            f"Matriz de Confusão — Classificador de Validade Estrutural   (Acurácia = {acc:.1%})",
-            fontsize=_FONT_SIZE + 2, fontweight="bold",
+        critical_count = int(cm[0, 1])
+        invalid_total = int(cm[0].sum())
+        critical_rate = critical_count / invalid_total if invalid_total else 0.0
+        threshold_text = (
+            f" · P(infeasible) threshold = {invalid_threshold:.3f}"
+            if invalid_threshold is not None
+            else ""
         )
 
-        _cmap = "Blues"
+        fig, axes = plt.subplots(1, 2, figsize=(8.4, 4.0))
+        fig.suptitle("Structural Feasibility Classifier — Confusion Matrices")
+        fig.text(
+            0.5,
+            0.925,
+            f"Accuracy = {acc:.1%}{threshold_text} · "
+            f"Critical false negatives = {critical_count}/{invalid_total} ({critical_rate:.1%})",
+            ha="center",
+            va="top",
+            fontsize=SUBTITLE_SIZE,
+            fontweight="normal",
+        )
 
-        for ax, data, fmt, title in zip(
+        _cmap = SEQUENTIAL_CMAP
+
+        for ax, data, fmt, title, colorbar_label in zip(
             axes,
             [cm, cm_pct],
             ["d", ".1f"],
-            ["Contagem absoluta", "Normalizada (% por classe real)"],
+            ["Counts", "Row-normalized (%)"],
+            ["Count", "Row percentage (%)"],
         ):
+            color_max = max(float(np.nanmax(data)), 1.0)
             if _SEABORN:
                 sns.heatmap(
                     data, annot=True, fmt=fmt, cmap=_cmap,
+                    vmin=0.0, vmax=color_max,
                     xticklabels=class_names, yticklabels=class_names,
                     linewidths=0.5, linecolor="#E2E8F0",
-                    cbar_kws={"shrink": 0.8},
+                    cbar_kws={"shrink": 0.8, "label": colorbar_label},
                     ax=ax,
                 )
             else:
-                im = ax.imshow(data, cmap=_cmap)
-                plt.colorbar(im, ax=ax, shrink=0.8)
+                im = ax.imshow(data, cmap=_cmap, vmin=0.0, vmax=color_max)
+                colorbar = plt.colorbar(im, ax=ax, shrink=0.8)
+                colorbar.set_label(colorbar_label)
                 for i in range(len(class_names)):
                     for j in range(len(class_names)):
                         ax.text(j, i, format(data[i, j], fmt),
@@ -342,13 +417,19 @@ class NNDiagnosticsPlotter:
                 ax.set_xticklabels(class_names)
                 ax.set_yticklabels(class_names)
 
-            ax.set_xlabel("Previsto")
-            ax.set_ylabel("Real")
-            ax.set_title(title)
+            color_threshold = float(np.nanmin(data) + 0.45 * np.ptp(data))
+            for annotation, value in zip(ax.texts, np.asarray(data).ravel()):
+                annotation.set_color("white" if float(value) <= color_threshold else "#111111")
 
-        plt.tight_layout()
+            ax.set_xlabel("Predicted class")
+            ax.set_ylabel("Actual class")
+            ax.set_title(title)
+            ax.grid(False)
+
+        add_panel_labels(axes)
+        fig.subplots_adjust(left=0.08, right=0.97, bottom=0.17, top=0.76, wspace=0.38)
         out = self.output_dir / "confusion_matrix.png"
-        plt.savefig(out)
+        save_thesis_figure(fig, out)
         plt.close("all")
         print(f"[NNDiagnostics] Salvo: {out}")
         return out
@@ -363,12 +444,16 @@ class NNDiagnosticsPlotter:
         thresholds: Optional[np.ndarray] = None,
         y_true: Optional[np.ndarray] = None,
         y_score: Optional[np.ndarray] = None,
+        threshold_to_mark: Optional[float] = None,
+        split_label: Optional[str] = None,
+        positive_class_label: str = "Infeasible",
     ) -> Optional[Path]:
         """
         Plot ROC curve with AUC and optimal Youden threshold.
 
-        Priority: if fpr/tpr are passed, use them.  Otherwise tries
-        ``metrics/roc_curve.json``.  Finally, computes from y_true / y_score.
+        Priority: explicit arrays, then supplied test labels/scores, then
+        ``metrics/roc_curve_test.json``.  Validation ROC is only a fallback for
+        legacy experiments that do not contain test ROC data.
 
         Parameters
         ----------
@@ -381,22 +466,29 @@ class NNDiagnosticsPlotter:
             return None
 
         # -- load or compute --------------------------------------------------
-        _thr_opt = None
+        _thr_opt = threshold_to_mark
+        if (fpr is None or tpr is None) and y_true is not None and y_score is not None:
+            fpr, tpr, thresholds = roc_curve(y_true, y_score, pos_label=1)
+
         if fpr is None or tpr is None:
-            roc_path = self.exp_dir / "metrics" / "roc_curve.json"
-            if roc_path.exists():
+            candidates = [
+                self.exp_dir / "metrics" / "roc_curve_test.json",
+                self.exp_dir / "metrics" / "roc_curve.json",
+            ]
+            for roc_path in candidates:
+                if not roc_path.exists():
+                    continue
                 try:
                     with open(roc_path, encoding="utf-8") as f:
                         obj = json.load(f)
-                    fpr        = np.asarray(obj["fpr"],        dtype=float)
-                    tpr        = np.asarray(obj["tpr"],        dtype=float)
+                    fpr = np.asarray(obj["fpr"], dtype=float)
+                    tpr = np.asarray(obj["tpr"], dtype=float)
                     thresholds = np.asarray(obj["thresholds"], dtype=float)
+                    split_label = split_label or str(obj.get("split", "unknown"))
+                    break
                 except Exception as exc:
-                    print(f"[NNDiagnostics] ROC: failed to load roc_curve.json — {exc}")
+                    print(f"[NNDiagnostics] ROC: failed to load {roc_path.name} — {exc}")
                     fpr = tpr = None
-
-        if fpr is None and y_true is not None and y_score is not None:
-            fpr, tpr, thresholds = roc_curve(y_true, y_score, pos_label=1)
 
         if fpr is None:
             print("[NNDiagnostics] ROC: no data available — skipping.")
@@ -406,7 +498,7 @@ class NNDiagnosticsPlotter:
 
         # -- load optimal threshold -------------------------------------------
         thr_path = self.exp_dir / "metrics" / "validity_threshold.json"
-        if thr_path.exists():
+        if _thr_opt is None and thr_path.exists():
             try:
                 with open(thr_path, encoding="utf-8") as f:
                     _thr_opt = float(json.load(f).get("threshold", float("nan")))
@@ -417,38 +509,65 @@ class NNDiagnosticsPlotter:
             _thr_opt = float(thresholds[best_idx])
 
         # -- plot -------------------------------------------------------------
-        fig, ax = plt.subplots(figsize=(7, 6))
+        fig, ax = plt.subplots(figsize=(7.4, 4.8))
+        fig.suptitle("Receiver Operating Characteristic (ROC)")
 
         ax.plot(fpr, tpr, color=_PRIMARY, lw=2.2,
-                label=f"Curva ROC  (AUC = {roc_auc:.3f})")
+                label=f"ROC curve (AUC = {roc_auc:.3f})")
         ax.plot([0, 1], [0, 1], color=_MUTED, lw=1.2, linestyle="--",
-                label="Classificador aleatório")
+                label="No-skill classifier")
         ax.fill_between(fpr, tpr, alpha=0.08, color=_PRIMARY)
 
         # mark optimal threshold on the curve
         if _thr_opt is not None and thresholds is not None:
-            idx = int(np.argmin(np.abs(thresholds - _thr_opt)))
+            threshold_distance = np.abs(thresholds - _thr_opt)
+            threshold_distance[~np.isfinite(threshold_distance)] = np.inf
+            idx = int(np.argmin(threshold_distance))
             ax.scatter(fpr[idx], tpr[idx], s=100, zorder=5,
                        color=_DANGER, edgecolors="white", linewidths=1.2,
-                       label=f"Limiar ótimo = {_thr_opt:.3f}")
+                       label=f"Validation-selected threshold = {_thr_opt:.3f}")
+            annotation_x = float(np.clip(fpr[idx] + 0.08, 0.08, 0.75))
+            annotation_y = float(np.clip(tpr[idx] - 0.10, 0.15, 0.92))
             ax.annotate(
                 f"FPR={fpr[idx]:.2f}\nTPR={tpr[idx]:.2f}",
                 xy=(fpr[idx], tpr[idx]),
-                xytext=(fpr[idx] + 0.08, tpr[idx] - 0.10),
+                xytext=(annotation_x, annotation_y),
                 fontsize=_FONT_SIZE - 1,
-                arrowprops=dict(arrowstyle="->", color=_MUTED),
+                zorder=7,
+                arrowprops={
+                    "arrowstyle": "-|>",
+                    "color": _MUTED,
+                    "linewidth": 1.2,
+                    "mutation_scale": 12,
+                    "shrinkB": 8,
+                    "zorder": 6,
+                },
             )
 
         ax.set_xlim(-0.02, 1.02)
         ax.set_ylim(-0.02, 1.02)
-        ax.set_xlabel("Taxa de Falsos Positivos (FPR)")
-        ax.set_ylabel("Taxa de Verdadeiros Positivos (TPR / Recall)")
-        ax.set_title("Curva ROC — Classificador de Validade Estrutural")
-        ax.legend(loc="lower right")
+        ax.set_aspect("equal", adjustable="box")
+        ax.set_xlabel("False Positive Rate (1 − Specificity)")
+        ax.set_ylabel("True Positive Rate (Sensitivity/Recall)")
+        split_title = f"{split_label.capitalize()} set · " if split_label else ""
+        fig.text(
+            0.5,
+            0.91,
+            f"{split_title}Positive class: {positive_class_label}",
+            ha="center",
+            va="top",
+            fontsize=SUBTITLE_SIZE,
+            fontweight="normal",
+        )
+        ax.legend(
+            loc="center left",
+            bbox_to_anchor=(1.02, 0.30),
+            borderaxespad=0.0,
+        )
 
-        plt.tight_layout()
+        fig.subplots_adjust(left=0.10, right=0.64, bottom=0.14, top=0.86)
         out = self.output_dir / "roc_auc.png"
-        plt.savefig(out)
+        save_thesis_figure(fig, out)
         plt.close("all")
         print(f"[NNDiagnostics] Salvo: {out}")
         return out
@@ -497,7 +616,7 @@ class NNDiagnosticsPlotter:
             unique = np.unique(y_test)
             if len(unique) <= 5:
                 metric_fn  = lambda yt, yp: 1.0 - accuracy_score(yt, (yp >= 0.5).astype(int))
-                metric_name = "1 − Acurácia"
+                metric_name = "1 − Accuracy"
             else:
                 metric_fn  = mean_absolute_error
                 metric_name = "MAE"
@@ -528,7 +647,7 @@ class NNDiagnosticsPlotter:
         # palette: positive = important, negative = noise
         colors = [_PRIMARY if v >= 0 else _MUTED for v in imp_m]
 
-        fig, ax = plt.subplots(figsize=(9, max(5, top_n * 0.38)))
+        fig, ax = plt.subplots(figsize=(SINGLE_COLUMN[0], max(4.0, top_n * 0.28)))
         y_pos = np.arange(len(names))
 
         ax.barh(y_pos, imp_m[::-1], xerr=imp_s[::-1],
@@ -538,16 +657,22 @@ class NNDiagnosticsPlotter:
 
         ax.set_yticks(y_pos)
         ax.set_yticklabels(names[::-1], fontsize=_FONT_SIZE - 1)
-        ax.set_xlabel(f"Aumento em {metric_name} após permutação  (maior = mais importante)")
-        ax.set_title(
-            f"Permutation Feature Importance  (top {len(names)}, {n_repeats} repetições)\n"
-            f"Baseline {metric_name} = {baseline:.4f}",
-            fontsize=_FONT_SIZE + 1,
+        ax.set_xlabel(f"Increase in {metric_name} after permutation (higher = more important)")
+        ax.set_title(f"Permutation Feature Importance — Top {len(names)} Features")
+        ax.text(
+            0.99,
+            0.01,
+            f"Baseline {metric_name} = {baseline:.4f}; {n_repeats} repeats",
+            transform=ax.transAxes,
+            ha="right",
+            va="bottom",
+            fontsize=_FONT_SIZE - 2,
+            color=_MUTED,
         )
 
         plt.tight_layout()
         out = self.output_dir / filename
-        plt.savefig(out)
+        save_thesis_figure(fig, out)
         plt.close("all")
         print(f"[NNDiagnostics] Salvo: {out}")
         return out
@@ -559,7 +684,7 @@ class NNDiagnosticsPlotter:
         self,
         y_true: np.ndarray,
         y_pred: np.ndarray,
-        label: str = "Aço (kgf)",
+        label: str = "Reinforcement steel weight (kgf)",
         filename: str = "steel_residuals_vs_predicted.png",
     ) -> Path:
         """
@@ -573,9 +698,9 @@ class NNDiagnosticsPlotter:
         y_pred = np.asarray(y_pred, dtype=float).ravel()
         residuals = y_true - y_pred
 
-        fig, ax = plt.subplots(figsize=(8, 5))
+        fig, ax = plt.subplots(figsize=SINGLE_COLUMN)
         ax.scatter(y_pred, residuals, s=16, alpha=0.5, color=_PRIMARY, edgecolors="none")
-        ax.axhline(0, color=_DANGER, lw=1.5, linestyle="--", label="Resíduo = 0")
+        ax.axhline(0, color=_DANGER, lw=1.5, linestyle="--", label="Zero residual")
 
         # ±1 std band
         std_r = float(residuals.std())
@@ -583,18 +708,14 @@ class NNDiagnosticsPlotter:
         ax.axhline(-std_r, color=_MUTED, lw=1.0, linestyle=":", label=f"−1σ = {-std_r:+.1f}")
 
         unit = label.split("(")[-1].rstrip(")")
-        ax.set_xlabel(f"Valor Previsto  [{unit}]")
-        ax.set_ylabel(f"Resíduo  (Real − Previsto)  [{unit}]")
-        ax.set_title(
-            f"Resíduos vs. Valor Previsto — {label}\n"
-            f"(padrão aleatório = homocedasticidade; funil = heterocedasticidade)",
-            fontsize=_FONT_SIZE,
-        )
+        ax.set_xlabel(f"Predicted value [{unit}]")
+        ax.set_ylabel(f"Residual (Observed − Predicted) [{unit}]")
+        ax.set_title(f"Residuals vs. Predicted Values — {label}")
         ax.legend(fontsize=_FONT_SIZE - 1)
 
         plt.tight_layout()
         out = self.output_dir / filename
-        plt.savefig(out)
+        save_thesis_figure(fig, out)
         plt.close("all")
         print(f"[NNDiagnostics] Salvo: {out}")
         return out
@@ -606,7 +727,7 @@ class NNDiagnosticsPlotter:
         self,
         y_true: np.ndarray,
         y_pred: np.ndarray,
-        label: str = "Aço (kgf)",
+        label: str = "Reinforcement steel weight (kgf)",
         filename: str = "steel_qq_residuals.png",
     ) -> Optional[Path]:
         """
@@ -627,20 +748,20 @@ class NNDiagnosticsPlotter:
         y_pred    = np.asarray(y_pred, dtype=float).ravel()
         residuals = y_true - y_pred
 
-        fig, ax = plt.subplots(figsize=(6, 6))
+        fig, ax = plt.subplots(figsize=SQUARE)
 
         # probplot returns (osm, osr), (slope, intercept, r)
         (osm, osr), (slope, intercept, r) = _stats.probplot(residuals, dist="norm")
         ax.scatter(osm, osr, s=14, alpha=0.55, color=_PRIMARY, edgecolors="none",
-                   label="Quantis observados")
+                   label="Observed quantiles")
         ax.plot(osm, slope * np.asarray(osm) + intercept,
-                color=_DANGER, lw=1.8, linestyle="--", label="Linha de referência Normal")
+                color=_DANGER, lw=1.8, linestyle="--", label="Normal reference line")
 
         # Shapiro-Wilk on subsample (max 5000 — SW limitation)
         rng   = np.random.default_rng(42)
         samp  = residuals if len(residuals) <= 5000 else residuals[rng.choice(len(residuals), 5000, replace=False)]
         sw_stat, sw_p = _stats.shapiro(samp)
-        normality_str = "Normal (p≥0.05)" if sw_p >= 0.05 else "Não-Normal (p<0.05)"
+        normality_str = "Consistent with normality (p ≥ 0.05)" if sw_p >= 0.05 else "Non-normal (p < 0.05)"
         ax.annotate(
             f"Shapiro-Wilk: W={sw_stat:.4f},  p={sw_p:.4f}\n→ {normality_str}",
             xy=(0.05, 0.93), xycoords="axes fraction",
@@ -648,19 +769,15 @@ class NNDiagnosticsPlotter:
             bbox=dict(boxstyle="round,pad=0.3", facecolor=_BG, edgecolor=_MUTED, alpha=0.9),
         )
 
-        ax.set_xlabel("Quantis Teóricos (Normal)")
-        ax.set_ylabel(f"Quantis Observados dos Resíduos")
-        ax.set_title(
-            f"Q-Q Plot dos Resíduos — {label}\n"
-            f"(pontos na diagonal = distribuição Normal)",
-            fontsize=_FONT_SIZE,
-        )
+        ax.set_xlabel("Theoretical Normal Quantiles")
+        ax.set_ylabel("Observed Residual Quantiles")
+        ax.set_title(f"Normal Q–Q Plot of Residuals — {label}")
         ax.legend(fontsize=_FONT_SIZE - 1)
         ax.set_aspect("equal")
 
         plt.tight_layout()
         out = self.output_dir / filename
-        plt.savefig(out)
+        save_thesis_figure(fig, out)
         plt.close("all")
         print(f"[NNDiagnostics] Salvo: {out}")
         return out
@@ -682,9 +799,8 @@ class NNDiagnosticsPlotter:
         1-D Partial Dependence Plot for the top-N most important features.
 
         For each selected feature, sweeps its value across [min, max] of the
-        test set while fixing all other features at their median, then plots
-        the mean model prediction.  Scatter of actual test values is overlaid
-        to show the empirical distribution.
+        test set while retaining the observed values of all other features,
+        then plots the mean model prediction.
 
         Parameters
         ----------
@@ -722,9 +838,7 @@ class NNDiagnosticsPlotter:
         top_indices = np.argsort(imp)[::-1][:top_n]
 
         # ── Build grid and compute partial dependence ─────────────────────────
-        X_median = np.median(X_test, axis=0)  # reference point: all other features at median
-
-        fig, axes = plt.subplots(1, top_n, figsize=(5 * top_n, 5), sharey=False)
+        fig, axes = plt.subplots(1, top_n, figsize=(FULL_WIDTH[0], 3.2), sharey=False)
         if top_n == 1:
             axes = [axes]
 
@@ -741,12 +855,12 @@ class NNDiagnosticsPlotter:
                 pdp_mean[g_i]     = float(preds.mean())
                 pdp_std[g_i]      = float(preds.std())
 
-            ax.plot(grid_vals, pdp_mean, color=_PRIMARY, lw=2.2, label="Média PDP")
+            ax.plot(grid_vals, pdp_mean, color=_PRIMARY, lw=2.2, label="Mean partial dependence")
             ax.fill_between(
                 grid_vals,
                 pdp_mean - pdp_std,
                 pdp_mean + pdp_std,
-                alpha=0.15, color=_PRIMARY, label="±1σ predições",
+                alpha=0.15, color=_PRIMARY, label="±1 SD of predictions",
             )
 
             # Overlay rug of actual feature values in test set
@@ -757,18 +871,15 @@ class NNDiagnosticsPlotter:
             )
 
             ax.set_xlabel(feat_name, fontsize=_FONT_SIZE - 1)
-            ax.set_ylabel("Predição Média — Aço (kgf)" if ax is axes[0] else "")
+            ax.set_ylabel("Mean predicted reinforcement steel weight (kgf)" if ax is axes[0] else "")
             ax.set_title(f"PDP: {feat_name}", fontsize=_FONT_SIZE)
             ax.legend(fontsize=_FONT_SIZE - 2)
 
-        fig.suptitle(
-            f"Partial Dependence Plot — Top {top_n} Features mais Importantes\n"
-            f"(cada curva: feature varia, demais fixas na mediana)",
-            fontsize=_FONT_SIZE + 1, fontweight="bold",
-        )
-        plt.tight_layout()
+        fig.suptitle(f"Partial Dependence Plots — Top {top_n} Features")
+        add_panel_labels(axes)
+        plt.tight_layout(rect=(0, 0, 1, 0.93))
         out = self.output_dir / filename
-        plt.savefig(out)
+        save_thesis_figure(fig, out)
         plt.close("all")
         print(f"[NNDiagnostics] Salvo: {out}")
         return out
@@ -808,11 +919,11 @@ class NNDiagnosticsPlotter:
         tqs_ms  = tqs_sec * 1000
         speedup = tqs_ms / surrogate_ms
 
-        labels = ["Surrogate (DNN)", "TQS (simulação)"]
+        labels = ["Surrogate model (DNN)", "TQS structural analysis"]
         values = [surrogate_ms, tqs_ms]
         colors = [_ACCENT, _DANGER]
 
-        fig, ax = plt.subplots(figsize=(7, 4))
+        fig, ax = plt.subplots(figsize=SINGLE_COLUMN)
         bars = ax.barh(labels, values, color=colors, edgecolor="white", height=0.5)
 
         # Annotate bar values
@@ -826,11 +937,17 @@ class NNDiagnosticsPlotter:
             )
 
         ax.set_xscale("log")
-        ax.set_xlabel("Tempo por amostra  (ms, escala log)")
-        ax.set_title(
-            f"Viabilidade Computacional: Surrogate vs TQS\n"
-            f"Speedup: ×{speedup:,.0f}  ({tqs_ms/1000:.1f} s  →  {surrogate_ms:.3f} ms por amostra)",
-            fontsize=_FONT_SIZE + 1, fontweight="bold",
+        ax.set_xlabel("Time per sample (ms, log scale)")
+        ax.set_title("Computational Performance: Surrogate Model vs. TQS")
+        ax.text(
+            0.99,
+            0.08,
+            f"Speedup: ×{speedup:,.0f}",
+            transform=ax.transAxes,
+            ha="right",
+            va="bottom",
+            fontsize=_FONT_SIZE,
+            fontweight="semibold",
         )
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
@@ -838,7 +955,7 @@ class NNDiagnosticsPlotter:
 
         plt.tight_layout()
         out = self.output_dir / "speedup_comparison.png"
-        plt.savefig(out)
+        save_thesis_figure(fig, out)
         plt.close("all")
         print(f"[NNDiagnostics] Salvo: {out}")
         return out
@@ -875,21 +992,23 @@ class NNDiagnosticsPlotter:
         if not layer_norms:
             return None  # no gradient data saved
 
-        fig, ax = plt.subplots(figsize=(12, 5))
-        palette = plt.cm.tab10.colors  # type: ignore[attr-defined]
+        fig, ax = plt.subplots(figsize=FULL_WIDTH)
+        palette = [_PRIMARY, _SECONDARY, _ACCENT, _MUTED, "#333333"]
+        line_styles = ["-", "--", "-.", ":"]
         for idx, (layer, vals) in enumerate(layer_norms.items()):
             ep, nrm = zip(*vals)
             ax.semilogy(ep, nrm, lw=1.4, label=layer,
-                        color=palette[idx % len(palette)])
+                        color=palette[idx % len(palette)],
+                        linestyle=line_styles[(idx // len(palette)) % len(line_styles)])
 
-        ax.set_xlabel("Época")
-        ax.set_ylabel("Norma L2 do Gradiente (escala log)")
-        ax.set_title("Normas de Gradiente por Camada ao Longo do Treinamento")
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel("Gradient L2 Norm (log scale)")
+        ax.set_title("Layerwise Gradient Norms during Training")
         ax.legend(fontsize=max(7, _FONT_SIZE - 3), ncol=2, loc="upper right")
 
         plt.tight_layout()
         out = self.output_dir / "gradient_norms.png"
-        plt.savefig(out)
+        save_thesis_figure(fig, out)
         plt.close("all")
         print(f"[NNDiagnostics] Salvo: {out}")
         return out
@@ -921,7 +1040,7 @@ class NNDiagnosticsPlotter:
         _apply_theme()
         df = pd.DataFrame(X, columns=list(feature_names))
         if y is not None:
-            df["★ steel_kgf"] = y
+            df["Steel weight [kgf]"] = y
 
         corr = df.corr()
         n = len(corr)
@@ -944,12 +1063,12 @@ class NNDiagnosticsPlotter:
             ax.set_yticklabels(corr.index, fontsize=7)
 
         ax.set_title(
-            "Matriz de Correlação de Features" + (" (+ target)" if y is not None else ""),
+            "Feature Correlation Matrix" + (" (including target)" if y is not None else ""),
             fontsize=12, pad=14,
         )
         plt.tight_layout()
         out = self.output_dir / filename
-        plt.savefig(out, dpi=_FIG_DPI, bbox_inches="tight")
+        save_thesis_figure(fig, out)
         plt.close("all")
         print(f"[NNDiagnostics] Saved: {out}")
         return out
@@ -958,7 +1077,7 @@ class NNDiagnosticsPlotter:
         self,
         y_true: np.ndarray,
         y_pred: np.ndarray,
-        label: str = "Aço (kgf)",
+        label: str = "Reinforcement steel weight (kgf)",
         filename: str = "error_histogram.png",
     ) -> Optional[Path]:
         """
@@ -973,51 +1092,110 @@ class NNDiagnosticsPlotter:
         mae = float(np.abs(errors).mean())
         pct_5pct = float(np.mean(np.abs(errors) <= 0.05 * np.abs(y_true)) * 100)
 
-        fig, axes = plt.subplots(1, 2, figsize=(13, 5))
-        fig.suptitle(
-            f"Distribuição de Erros de Predição — {label}\n"
-            f"μ={mu:+.1f}  σ={sigma:.1f}  MAE={mae:.1f}  dentro de ±5% = {pct_5pct:.1f}%",
-            fontsize=11,
+        fig, axes = plt.subplots(1, 2, figsize=(8.2, 3.7))
+        fig.suptitle(f"Prediction Error Distribution — {label}")
+        fig.text(
+            0.5,
+            0.925,
+            f"μ = {mu:+.1f} kgf · σ = {sigma:.1f} kgf · MAE = {mae:.1f} kgf · "
+            f"|relative error| ≤ 5%: {pct_5pct:.1f}%",
+            ha="center",
+            va="top",
+            fontsize=SUBTITLE_SIZE,
+            fontweight="normal",
         )
 
         # Panel 1 — histogram + normal overlay
         ax = axes[0]
         ax.hist(errors, bins=40, density=True, color=_PRIMARY, alpha=0.72,
-                edgecolor="white", label="Resíduos")
+                edgecolor="white", label="Residuals")
         x_fit = np.linspace(errors.min(), errors.max(), 300)
         try:
             from scipy.stats import norm as _norm
             ax.plot(x_fit, _norm.pdf(x_fit, mu, sigma), color=_DANGER, lw=2,
-                    label=f"Normal\nμ={mu:+.1f}, σ={sigma:.1f}")
+                    label="Normal fit")
         except ImportError:
             y_fit = ((1 / (sigma * np.sqrt(2 * np.pi)))
                      * np.exp(-0.5 * ((x_fit - mu) / sigma) ** 2))
-            ax.plot(x_fit, y_fit, color=_DANGER, lw=2,
-                    label=f"Normal\nμ={mu:+.1f}, σ={sigma:.1f}")
-        ax.axvline(0,  color="k",        lw=1.5, linestyle="--", label="Zero")
-        ax.axvline(mu, color=_SECONDARY, lw=1.5, linestyle=":",  label=f"Média={mu:+.1f}")
-        ax.set_xlabel(f"Resíduo (Real − Predito) [{label}]")
-        ax.set_ylabel("Densidade")
-        ax.set_title("Histograma de Erros")
-        ax.legend(fontsize=9)
+            ax.plot(x_fit, y_fit, color=_DANGER, lw=2, label="Normal fit")
+        # Finish autoscaling with the bars and fitted density before drawing
+        # reference lines. This prevents the line caps from changing the range.
+        data_hist_top = ax.get_ylim()[1]
+        final_hist_ylim = (0.0, data_hist_top * 1.36)
+        ax.set_ylim(final_hist_ylim)
+        reference_line_top = min(0.94, data_hist_top * 1.02 / final_hist_ylim[1])
+        mean_is_distinct = _mean_is_visually_distinct_from_zero(errors, 40)
+        zero_label = (
+            "Zero residual"
+            if mean_is_distinct
+            else "Zero residual (mean ≈ 0)"
+        )
+        ax.axvline(
+            0, color=_DANGER, lw=1.5, linestyle="--", label=zero_label,
+            ymin=0.0, ymax=reference_line_top, clip_on=True, dash_capstyle="butt",
+        )
+        if mean_is_distinct:
+            ax.axvline(
+                mu, color=_DANGER, lw=1.5, linestyle=":", label="Mean residual",
+                ymin=0.0, ymax=reference_line_top, clip_on=True,
+                dash_capstyle="butt",
+            )
+        unit = label.split("(")[-1].rstrip(")")
+        ax.set_xlabel(f"Residual (Observed − Predicted) [{unit}]")
+        ax.set_ylabel("Density")
+        ax.set_title("Residual Histogram")
+        ax.legend(
+            loc="upper center", ncol=2, fontsize=LEGEND_SIZE,
+            framealpha=1.0, facecolor="white", edgecolor=COLORS["light_gray"],
+        )
 
         # Panel 2 — ECDF
         ax2 = axes[1]
         sorted_err = np.sort(errors)
         ecdf = np.arange(1, len(sorted_err) + 1) / len(sorted_err)
         ax2.step(sorted_err, ecdf, where="post", color=_PRIMARY, lw=2, label="ECDF")
-        ax2.axvline(0, color="k", lw=1.5, linestyle="--")
         pct_neg = float((errors < 0).mean() * 100)
-        ax2.axhline(pct_neg / 100, color=_SECONDARY, lw=1.2, linestyle=":",
-                    label=f"{pct_neg:.0f}% subestimado")
-        ax2.set_xlabel(f"Resíduo [{label}]")
+        ax2.set_ylim(-0.02, 1.02)
+        ax2.axvline(
+            0, ymin=0.0, ymax=0.96, color=_DANGER, lw=1.5,
+            linestyle="--", clip_on=True,
+            dash_capstyle="butt",
+        )
+        ax2.axhline(
+            pct_neg / 100,
+            color=_DANGER,
+            lw=1.2,
+            linestyle=":",
+        )
+        ax2.text(
+            0.015,
+            pct_neg / 100 + 0.015,
+            f"{pct_neg:.0f}% underpredicted",
+            transform=ax2.get_yaxis_transform(),
+            ha="left",
+            va="bottom",
+            fontsize=ANNOTATION_SIZE,
+            color=_DANGER,
+        )
+        ax2.text(
+            0,
+            0.025,
+            "Zero residual",
+            transform=ax2.get_xaxis_transform(),
+            ha="right",
+            va="bottom",
+            rotation=90,
+            fontsize=ANNOTATION_SIZE,
+            color=_DANGER,
+        )
+        ax2.set_xlabel(f"Residual [{unit}]")
         ax2.set_ylabel("ECDF")
-        ax2.set_title("Distribuição Acumulada de Erros")
-        ax2.legend(fontsize=9)
+        ax2.set_title("Empirical Cumulative Distribution")
 
-        plt.tight_layout()
+        add_panel_labels(axes)
+        fig.subplots_adjust(left=0.09, right=0.98, bottom=0.18, top=0.76, wspace=0.30)
         out = self.output_dir / filename
-        plt.savefig(out, dpi=_FIG_DPI, bbox_inches="tight")
+        save_thesis_figure(fig, out)
         plt.close("all")
         print(f"[NNDiagnostics] Saved: {out}")
         return out
@@ -1049,23 +1227,38 @@ class NNDiagnosticsPlotter:
         Z_tr, Z_te = Z[:len(X_train)], Z[len(X_train):]
         ev = pca.explained_variance_ratio_ * 100
 
-        fig, axes = plt.subplots(1, 2, figsize=(14, 6))
-        fig.suptitle(
-            f"Cobertura do Espaço de Design — PCA\n"
-            f"PC1 {ev[0]:.1f}%  |  PC2 {ev[1]:.1f}%  da variância explicada",
-            fontsize=12,
+        fig, axes = plt.subplots(1, 2, figsize=TWO_PANEL)
+        fig.suptitle("Design-Space Coverage — Principal Component Analysis")
+        fig.text(
+            0.5,
+            0.91,
+            f"Explained variance: PC1 = {ev[0]:.1f}% · PC2 = {ev[1]:.1f}%",
+            ha="center",
+            va="top",
+            fontsize=SUBTITLE_SIZE,
+            fontweight="normal",
         )
+        color_limits = None
+        available_targets = [np.asarray(values) for values in (y_train, y_test) if values is not None]
+        if available_targets:
+            targets = np.concatenate(available_targets)
+            color_limits = (float(targets.min()), float(targets.max()))
+        scatter_mappable = None
         for ax, (Z_s, y_s, lbl) in zip(
             axes,
             [
-                (Z_tr, y_train, f"Treino ({len(X_train)} amostras)"),
-                (Z_te, y_test,  f"Teste ({len(X_test)} amostras)"),
+                (Z_tr, y_train, f"Training set ({len(X_train)} samples)"),
+                (Z_te, y_test,  f"Test set ({len(X_test)} samples)"),
             ],
         ):
             if y_s is not None:
-                sc = ax.scatter(Z_s[:, 0], Z_s[:, 1], c=y_s,
-                                cmap="viridis", alpha=0.6, s=18, linewidths=0)
-                plt.colorbar(sc, ax=ax, label="Aço (kgf)", shrink=0.82)
+                sc = ax.scatter(
+                    Z_s[:, 0], Z_s[:, 1], c=y_s,
+                    cmap=SEQUENTIAL_CMAP, alpha=0.68, s=18, linewidths=0,
+                    vmin=color_limits[0] if color_limits else None,
+                    vmax=color_limits[1] if color_limits else None,
+                )
+                scatter_mappable = sc
             else:
                 ax.scatter(Z_s[:, 0], Z_s[:, 1], color=_PRIMARY,
                            alpha=0.5, s=18, linewidths=0)
@@ -1073,9 +1266,17 @@ class NNDiagnosticsPlotter:
             ax.set_ylabel(f"PC2 ({ev[1]:.1f}%)")
             ax.set_title(lbl)
 
-        plt.tight_layout()
+        add_panel_labels(axes)
+        fig.subplots_adjust(left=0.08, right=0.86, bottom=0.17, top=0.76, wspace=0.24)
+        if scatter_mappable is not None:
+            colorbar_axis = fig.add_axes([0.89, 0.20, 0.018, 0.52])
+            fig.colorbar(
+                scatter_mappable,
+                cax=colorbar_axis,
+                label="Reinforcement steel weight (kgf)",
+            )
         out = self.output_dir / filename
-        plt.savefig(out, dpi=_FIG_DPI, bbox_inches="tight")
+        save_thesis_figure(fig, out)
         plt.close("all")
         print(f"[NNDiagnostics] Saved: {out}")
         return out
@@ -1119,23 +1320,30 @@ class NNDiagnosticsPlotter:
 
         pct_out = float((d_test > threshold).mean() * 100)
 
-        fig, ax = plt.subplots(figsize=(10, 5))
+        fig, ax = plt.subplots(figsize=SINGLE_COLUMN)
         ax.hist(d_train, bins=50, alpha=0.65, color=_PRIMARY,
-                label=f"Treino amostra (n={len(d_train)})")
+                label=f"Training sample (n={len(d_train)})")
         ax.hist(d_test,  bins=50, alpha=0.65, color=_DANGER,
-                label=f"Teste (n={len(d_test)})")
+                label=f"Test set (n={len(d_test)})")
         ax.axvline(threshold, color="k", lw=2, linestyle="--",
-                   label=f"Limiar 97.5% χ² = {threshold:.1f}")
-        ax.set_xlabel("Distância de Mahalanobis (da distribuição de treino)")
-        ax.set_ylabel("Contagem")
-        ax.set_title(
-            f"Distância de Mahalanobis — Teste vs Treino\n"
-            f"{pct_out:.1f}% dos pontos de teste fora da região de 97.5%",
+                   label=f"97.5% χ² threshold = {threshold:.1f}")
+        ax.set_xlabel("Mahalanobis distance from the training distribution")
+        ax.set_ylabel("Count")
+        ax.set_title("Mahalanobis Distance — Test vs. Training Distribution")
+        ax.text(
+            0.98,
+            0.95,
+            f"Outside 97.5% region: {pct_out:.1f}%",
+            transform=ax.transAxes,
+            ha="right",
+            va="top",
+            fontsize=_FONT_SIZE - 1,
+            color=_MUTED,
         )
         ax.legend()
         plt.tight_layout()
         out = self.output_dir / filename
-        plt.savefig(out, dpi=_FIG_DPI, bbox_inches="tight")
+        save_thesis_figure(fig, out)
         plt.close("all")
         print(f"[NNDiagnostics] Saved: {out}")
         return out
@@ -1169,35 +1377,36 @@ class NNDiagnosticsPlotter:
         mean_te = dist_te.mean(axis=1)
         mean_tr = dist_tr.mean(axis=1)
 
-        fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+        fig, axes = plt.subplots(1, 2, figsize=TWO_PANEL)
         fig.suptitle(
-            f"Cobertura KNN (k={k_actual}) — Espaço de Features Normalizadas",
+            f"KNN Coverage (k = {k_actual}) — Standardized Feature Space",
             fontsize=12,
         )
 
         ax = axes[0]
         ax.hist(mean_tr, bins=40, alpha=0.65, color=_PRIMARY,
-                label=f"Treino→Treino (n={len(mean_tr)})")
+                label=f"Training → training (n={len(mean_tr)})")
         ax.hist(mean_te, bins=40, alpha=0.65, color=_DANGER,
-                label=f"Teste→Treino (n={len(mean_te)})")
-        ax.set_xlabel(f"Distância média aos {k_actual}-NN (espaço normalizado)")
-        ax.set_ylabel("Contagem")
-        ax.set_title("Distribuição de Distâncias KNN")
+                label=f"Test → training (n={len(mean_te)})")
+        ax.set_xlabel(f"Mean distance to the {k_actual} nearest training neighbors")
+        ax.set_ylabel("Count")
+        ax.set_title("KNN Distance Distribution")
         ax.legend(fontsize=9)
 
         ax2 = axes[1]
         pca  = PCA(n_components=2, random_state=42).fit(X_train)
         Z_te = pca.transform(X_test)
         sc   = ax2.scatter(Z_te[:, 0], Z_te[:, 1], c=mean_te,
-                           cmap="RdYlGn_r", s=28, alpha=0.85, linewidths=0)
-        plt.colorbar(sc, ax=ax2, label=f"Dist média ao {k_actual}-NN do treino")
+                           cmap=SEQUENTIAL_CMAP, s=28, alpha=0.85, linewidths=0)
+        plt.colorbar(sc, ax=ax2, label=f"Mean distance to {k_actual} nearest training neighbors")
         ax2.set_xlabel("PC1")
         ax2.set_ylabel("PC2")
-        ax2.set_title("Cobertura por Região (Vermelho = cobertura pobre)")
+        ax2.set_title("Coverage by Region")
 
-        plt.tight_layout()
+        add_panel_labels(axes)
+        plt.tight_layout(rect=(0, 0, 1, 0.93))
         out = self.output_dir / filename
-        plt.savefig(out, dpi=_FIG_DPI, bbox_inches="tight")
+        save_thesis_figure(fig, out)
         plt.close("all")
         print(f"[NNDiagnostics] Saved: {out}")
         return out
@@ -1261,40 +1470,46 @@ class OptimizationDiagnosticsPlotter:
             cur_best = min(cur_best, c)
             best_costs.append(cur_best)
 
-        fig, ax1 = plt.subplots(figsize=(11, 5))
+        fig, ax1 = plt.subplots(figsize=FULL_WIDTH)
         ax2 = ax1.twinx()
 
-        ax1.plot(iters, best_costs, color=_PRIMARY, lw=2.2, label="Custo mínimo (R$)")
+        ax1.plot(iters, best_costs, color=_PRIMARY, lw=2.2, label="Best-so-far objective cost (R$)")
         ax1.fill_between(iters, best_costs, alpha=0.08, color=_PRIMARY)
 
         # Mark improvement generations
         imp_x = [iters[i] for i, v in enumerate(improved) if v]
         imp_y = [best_costs[i] for i, v in enumerate(improved) if v]
         ax1.scatter(imp_x, imp_y, color=_ACCENT, zorder=5, s=40,
-                    label="Nova solução melhor", marker="^")
+                    label="New incumbent solution", marker="^")
 
         if any(s is not None for s in steels):
             steel_clean = [s if s is not None else float("nan") for s in steels]
             ax2.plot(iters, steel_clean, color=_SECONDARY, lw=1.6,
-                     linestyle="--", label="Aço melhor indivíduo (kgf)")
-            ax2.set_ylabel("Consumo de Aço — melhor indivíduo (kgf)", color=_SECONDARY)
+                     linestyle="--", label="Generation-best reinforcement steel weight (kgf)")
+            ax2.set_ylabel("Generation-best reinforcement steel weight (kgf)", color=_SECONDARY)
             ax2.tick_params(axis="y", labelcolor=_SECONDARY)
             ax2.legend(loc="upper right", fontsize=_FONT_SIZE - 1)
 
-        ax1.set_xlabel("Geração")
-        ax1.set_ylabel("Custo mínimo acumulado (R$)", color=_PRIMARY)
+        ax1.set_xlabel("Generation")
+        ax1.set_ylabel("Best-so-far objective cost (R$)", color=_PRIMARY)
         ax1.tick_params(axis="y", labelcolor=_PRIMARY)
-        ax1.set_title(
-            f"Convergência do Algoritmo Genético\n"
-            f"({len(iters)} gerações — custo final: R$ {best_costs[-1]:,.2f})",
-            fontsize=_FONT_SIZE + 1, fontweight="bold",
+        ax1.set_title("Genetic Algorithm Convergence")
+        ax1.text(
+            0.99,
+            0.04,
+            f"Final best cost: R$ {best_costs[-1]:,.2f} · {len(iters)} generations",
+            transform=ax1.transAxes,
+            ha="right",
+            va="bottom",
+            fontsize=_FONT_SIZE - 1,
+            color=_MUTED,
         )
         lines1, labels1 = ax1.get_legend_handles_labels()
         ax1.legend(lines1, labels1, loc="upper center", fontsize=_FONT_SIZE - 1)
 
         plt.tight_layout()
         out = self.output_dir / filename
-        plt.savefig(out)
+        save_thesis_figure(fig, out)
         plt.close("all")
         print(f"[OptDiagnostics] Salvo: {out}")
         return out
@@ -1319,7 +1534,7 @@ class OptimizationDiagnosticsPlotter:
         optimal_metrics : dict
             Same keys as seed_metrics.
         """
-        keys    = ["Custo (R$)", "Aço (kgf)", "Concreto (m³)", "Forma (m²)"]
+        keys    = ["Total cost (R$)", "Reinforcement steel (kgf)", "Concrete (m³)", "Column formwork (m²)"]
         s_vals  = [seed_metrics.get("cost", 0),
                    seed_metrics.get("steel", 0),
                    seed_metrics.get("concrete", 0),
@@ -1332,10 +1547,10 @@ class OptimizationDiagnosticsPlotter:
         x      = np.arange(len(keys))
         width  = 0.35
 
-        fig, ax = plt.subplots(figsize=(9, 5))
-        bars_s = ax.bar(x - width / 2, s_vals, width, label="Seed (inicial)",
+        fig, ax = plt.subplots(figsize=FULL_WIDTH)
+        bars_s = ax.bar(x - width / 2, s_vals, width, label="Baseline design",
                         color=_MUTED,    edgecolor="white")
-        bars_o = ax.bar(x + width / 2, o_vals, width, label="Design ótimo",
+        bars_o = ax.bar(x + width / 2, o_vals, width, label="Optimized design",
                         color=_PRIMARY,  edgecolor="white")
 
         # Annotate bars with value and % reduction
@@ -1353,22 +1568,22 @@ class OptimizationDiagnosticsPlotter:
         ax.set_xticks(x)
         ax.set_xticklabels(keys, fontsize=_FONT_SIZE)
         ax.set_title(
-            "Comparação: Configuração Seed vs Design Ótimo",
+            "Baseline vs. Optimized Design",
             fontsize=_FONT_SIZE + 1, fontweight="bold",
         )
         ax.legend(fontsize=_FONT_SIZE - 1)
-        ax.set_ylabel("Valor (escala independente por grupo)")
+        ax.set_ylabel("Value (mixed units)")
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
 
         # Secondary note
         fig.text(0.5, 0.01,
-                 "Nota: eixo Y comum — apenas para comparação relativa entre seed e ótimo.",
+                 "Note: different physical quantities share one axis; use only as a provisional comparison.",
                  ha="center", fontsize=_FONT_SIZE - 2, color=_MUTED)
 
         plt.tight_layout(rect=[0, 0.04, 1, 1])
         out = self.output_dir / filename
-        plt.savefig(out)
+        save_thesis_figure(fig, out)
         plt.close("all")
         print(f"[OptDiagnostics] Salvo: {out}")
         return out
@@ -1397,17 +1612,21 @@ class OptimizationDiagnosticsPlotter:
         surrogate_concrete: surrogate prediction for concrete (m³), optional.
         tqs_concrete     : TQS-computed concrete (m³), optional.
         """
-        labels = ["Surrogate (DNN)", "TQS (referência)"]
+        labels = ["Surrogate model (DNN)", "TQS reference"]
 
         has_concrete = surrogate_concrete is not None and tqs_concrete is not None
         n_groups = 2 if has_concrete else 1
-        fig, axes = plt.subplots(1, n_groups, figsize=(5 * n_groups + 1, 5))
+        fig, axes = plt.subplots(
+            1,
+            n_groups,
+            figsize=TWO_PANEL if n_groups == 2 else SINGLE_COLUMN,
+        )
         if n_groups == 1:
             axes = [axes]
 
-        group_data = [("Aço (kgf)", surrogate_steel, tqs_steel)]
+        group_data = [("Reinforcement steel weight (kgf)", surrogate_steel, tqs_steel)]
         if has_concrete:
-            group_data.append(("Concreto (m³)", surrogate_concrete, tqs_concrete))
+            group_data.append(("Concrete volume (m³)", surrogate_concrete, tqs_concrete))
 
         for ax, (title, s_val, t_val) in zip(axes, group_data):
             bars = ax.bar(labels, [s_val, t_val],
@@ -1417,22 +1636,26 @@ class OptimizationDiagnosticsPlotter:
                 ax.text(bar.get_x() + bar.get_width() / 2,
                         bar.get_height() * 1.01,
                         f"{val:,.1f}", ha="center", va="bottom", fontsize=_FONT_SIZE)
-            ax.set_title(
-                f"{title}\nErro relativo: {err_pct:.1f}%",
-                fontsize=_FONT_SIZE, fontweight="bold",
+            ax.set_title(title)
+            ax.text(
+                0.5,
+                0.95,
+                f"Relative error: {err_pct:.1f}%",
+                transform=ax.transAxes,
+                ha="center",
+                va="top",
+                fontsize=_FONT_SIZE - 1,
             )
             ax.set_ylabel(title)
             ax.spines["top"].set_visible(False)
             ax.spines["right"].set_visible(False)
 
-        fig.suptitle(
-            "Verificação do Ponto Ótimo: Surrogate vs TQS (referência)\n"
-            "(valida que o surrogate não enganou o otimizador)",
-            fontsize=_FONT_SIZE + 1, fontweight="bold",
-        )
-        plt.tight_layout()
+        fig.suptitle("Optimized Design Verification: Surrogate Model vs. TQS")
+        if n_groups > 1:
+            add_panel_labels(axes)
+        plt.tight_layout(rect=(0, 0, 1, 0.93))
         out = self.output_dir / filename
-        plt.savefig(out)
+        save_thesis_figure(fig, out)
         plt.close("all")
         print(f"[OptDiagnostics] Salvo: {out}")
         return out
@@ -1509,6 +1732,30 @@ def run_full_diagnostics(
         Number of permutation repeats for feature importance.
     """
     plotter = NNDiagnosticsPlotter(experiment_dir)
+    plot_data_store = PlotDataStore(experiment_dir)
+
+    # Persist final evaluation values before rendering. Plot styling can then
+    # be changed later without loading the model or repeating inference.
+    if y_test_steel is not None and y_pred_steel is not None:
+        try:
+            saved_test_indices = None
+            saved_arrays_path = Path(experiment_dir) / "arrays.npz"
+            if saved_arrays_path.exists():
+                with np.load(saved_arrays_path, allow_pickle=False) as saved_arrays:
+                    candidate = (
+                        saved_arrays["test_indices"]
+                        if "test_indices" in saved_arrays.files
+                        else None
+                    )
+                    if candidate is not None and len(candidate) == len(y_test_steel):
+                        saved_test_indices = candidate
+            plot_data_store.save_regression_test(
+                y_test_steel,
+                y_pred_steel,
+                sample_indices=saved_test_indices,
+            )
+        except Exception as exc:
+            print(f"[NNDiagnostics] Could not persist regression figure data: {exc}")
 
     # 1. Learning curves  (always, reads from disk)
     plotter.plot_learning_curves()
@@ -1537,13 +1784,13 @@ def run_full_diagnostics(
 
             plotter.plot_scatter_and_residuals(
                 y_test_steel, y_pred_steel,
-                label="Aço (kgf)", filename_prefix="steel"
+                label="Reinforcement steel weight (kgf)", filename_prefix="steel"
             )
             plotter.plot_residuals_vs_predicted(
-                y_test_steel, y_pred_steel, label="Aço (kgf)"
+                y_test_steel, y_pred_steel, label="Reinforcement steel weight (kgf)"
             )
             plotter.plot_qq_residuals(
-                y_test_steel, y_pred_steel, label="Aço (kgf)"
+                y_test_steel, y_pred_steel, label="Reinforcement steel weight (kgf)"
             )
         except Exception as exc:
             print(f"[NNDiagnostics] Scatter plot failed: {exc}")
@@ -1600,31 +1847,69 @@ def run_full_diagnostics(
     _clf_X = X_test_clf if X_test_clf is not None else X_test
     if classifier is not None and _clf_X is not None and y_test_valid is not None:
         try:
-            y_pred_labels = classifier.predict(_clf_X)
-            plotter.plot_confusion_matrix(y_test_valid, y_pred_labels)
+            if not hasattr(classifier, "predict_proba"):
+                raise RuntimeError(
+                    "Validity classifier must expose probabilities for the "
+                    "calibrated invalidity rule."
+                )
+            classes = list(getattr(classifier, "classes_", []))
+            idx_invalid = invalid_probability_index(classes)
+            invalid_probability = classifier.predict_proba(_clf_X)[:, idx_invalid]
 
-            idx_pos = 1  # default: class 1 = valid
-            if hasattr(classifier, "predict_proba"):
-                y_score = classifier.predict_proba(_clf_X)
-                classes = list(getattr(classifier, "classes_", [0, 1]))
-                idx_pos = classes.index(1) if 1 in classes else 1
-                plotter.plot_roc_auc(y_true=y_test_valid, y_score=y_score[:, idx_pos])
-            else:
-                plotter.plot_roc_auc()
+            threshold_path = Path(experiment_dir) / "metrics" / "validity_threshold.json"
+            if not threshold_path.exists():
+                raise FileNotFoundError(
+                    "Calibrated validity threshold is required for final classifier plots."
+                )
+            with open(threshold_path, encoding="utf-8") as stream:
+                invalid_threshold = float(json.load(stream)["threshold"])
+
+            y_pred_labels = validity_labels_from_invalid_probability(
+                invalid_probability,
+                invalid_threshold,
+            )
+            plot_data_store.save_classifier_test(
+                y_test_valid,
+                invalid_probability,
+                y_pred_labels,
+                invalid_threshold=invalid_threshold,
+                X_test=_clf_X,
+                feature_names=feature_names,
+            )
+            plotter.plot_confusion_matrix(
+                y_test_valid,
+                y_pred_labels,
+                invalid_threshold=invalid_threshold,
+            )
+
+            invalid_event = (np.asarray(y_test_valid, dtype=int) == INVALID_LABEL).astype(int)
+            plotter.plot_roc_auc(
+                y_true=invalid_event,
+                y_score=invalid_probability,
+                threshold_to_mark=invalid_threshold,
+                split_label="test",
+                positive_class_label="Infeasible",
+            )
 
             # ── Permutation Feature Importance for classifier ───────────────
-            if hasattr(classifier, "predict_proba"):
-                def _predict_clf(X: np.ndarray) -> np.ndarray:
-                    proba = classifier.predict_proba(X)
-                    return proba[:, idx_pos]
-                plotter.plot_permutation_importance(
-                    predict_fn=_predict_clf,
-                    X_test=_clf_X,
-                    y_test=y_test_valid,
-                    feature_names=feature_names,
-                    n_repeats=n_repeats_pfi,
-                    filename="pfi_validity_classifier.png",
-                )
+            def _predict_invalid_probability(X: np.ndarray) -> np.ndarray:
+                proba = classifier.predict_proba(X)
+                return proba[:, idx_invalid]
+
+            def _invalidity_error(y_true: np.ndarray, probability: np.ndarray) -> float:
+                predicted = (probability >= invalid_threshold).astype(int)
+                return 1.0 - accuracy_score(y_true, predicted)
+
+            plotter.plot_permutation_importance(
+                predict_fn=_predict_invalid_probability,
+                X_test=_clf_X,
+                y_test=invalid_event,
+                feature_names=feature_names,
+                metric_fn=_invalidity_error,
+                metric_name="classification error for the infeasibility rule",
+                n_repeats=n_repeats_pfi,
+                filename="pfi_validity_classifier.png",
+            )
         except Exception as exc:
             print(f"[NNDiagnostics] Classifier plots failed: {exc}")
 
@@ -1665,6 +1950,123 @@ def run_full_diagnostics(
     print(f"[NNDiagnostics] Diagnósticos salvos em: {plotter.output_dir}")
 
 
+def regenerate_training_figures(
+    experiment_dir: Path | str,
+    output_dir: Path | str | None = None,
+) -> list[Path]:
+    """Redraw model-independent figures exclusively from saved run artifacts."""
+    experiment_dir = Path(experiment_dir)
+    plotter = NNDiagnosticsPlotter(
+        experiment_dir,
+        Path(output_dir) if output_dir is not None else None,
+    )
+    generated: list[Path] = []
+
+    def remember(path: Optional[Path]) -> None:
+        if path is not None:
+            generated.append(Path(path))
+
+    # Per-epoch and runtime series are already persisted as JSON/NDJSON.
+    remember(plotter.plot_learning_curves())
+    remember(plotter.plot_gradient_norms())
+    remember(plotter.plot_speedup_comparison())
+
+    try:
+        figure_data = PlotDataStore(experiment_dir).load()
+    except FileNotFoundError:
+        figure_data = {}
+
+    regression_keys = {
+        "regression_y_true_steel_kgf",
+        "regression_y_pred_steel_kgf",
+    }
+    if regression_keys.issubset(figure_data):
+        observed = figure_data["regression_y_true_steel_kgf"]
+        predicted = figure_data["regression_y_pred_steel_kgf"]
+        remember(plotter.plot_scatter_and_residuals(observed, predicted))
+        remember(plotter.plot_residuals_vs_predicted(observed, predicted))
+        remember(plotter.plot_qq_residuals(observed, predicted))
+        remember(plotter.plot_error_histogram(observed, predicted))
+
+    classifier_keys = {
+        "classifier_y_true_validity",
+        "classifier_y_pred_validity",
+        "classifier_invalid_probability",
+        "classifier_invalid_threshold",
+    }
+    if classifier_keys.issubset(figure_data):
+        actual_validity = figure_data["classifier_y_true_validity"].astype(int)
+        predicted_validity = figure_data["classifier_y_pred_validity"].astype(int)
+        invalid_probability = figure_data["classifier_invalid_probability"]
+        invalid_threshold = float(
+            figure_data["classifier_invalid_threshold"].reshape(-1)[0]
+        )
+        remember(
+            plotter.plot_confusion_matrix(
+                actual_validity,
+                predicted_validity,
+                invalid_threshold=invalid_threshold,
+            )
+        )
+        invalid_event = (actual_validity == INVALID_LABEL).astype(int)
+        remember(
+            plotter.plot_roc_auc(
+                y_true=invalid_event,
+                y_score=invalid_probability,
+                threshold_to_mark=invalid_threshold,
+                split_label="test",
+                positive_class_label="Infeasible",
+            )
+        )
+    else:
+        remember(plotter.plot_roc_auc())
+
+    feature_names: list[str] = []
+    feature_names_path = experiment_dir / "metrics" / "feature_names.json"
+    if feature_names_path.exists():
+        try:
+            feature_names = list(
+                json.loads(feature_names_path.read_text(encoding="utf-8"))[
+                    "feature_names"
+                ]
+            )
+        except (KeyError, TypeError, json.JSONDecodeError):
+            feature_names = []
+
+    arrays_path = experiment_dir / "arrays.npz"
+    if arrays_path.exists():
+        with np.load(arrays_path, allow_pickle=False) as arrays:
+            X_train_scaled = arrays["X_train_scaled"]
+            X_test_scaled = arrays["X_test_scaled"]
+            X_train = arrays["X_train"]
+            y_train = arrays["y_train"][:, 0]
+            y_test = arrays["y_test"][:, 0]
+        if feature_names and len(feature_names) == X_train.shape[1]:
+            remember(
+                plotter.plot_feature_correlation_heatmap(
+                    X_train,
+                    feature_names,
+                    y=y_train,
+                )
+            )
+        remember(
+            plotter.plot_coverage_pca(
+                X_train_scaled,
+                X_test_scaled,
+                y_train=y_train,
+                y_test=y_test,
+            )
+        )
+        remember(plotter.plot_mahalanobis_outliers(X_train_scaled, X_test_scaled))
+        remember(plotter.plot_knn_coverage(X_train_scaled, X_test_scaled))
+
+    print(
+        f"[NNDiagnostics] Regenerated {len(generated)} figures from saved data "
+        f"in: {plotter.output_dir}"
+    )
+    return generated
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # CLI entry-point
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1698,12 +2100,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     out_dir = Path(args.out) if args.out else None
-    plotter = NNDiagnosticsPlotter(exp_dir, out_dir)
-
-    # Always plot what we can from saved artefacts
-    plotter.plot_learning_curves()
-    plotter.plot_gradient_norms()
-    plotter.plot_roc_auc()
+    regenerate_training_figures(exp_dir, out_dir)
 
     # If test CSV is provided, load the full inference stack and plot scatter + PFI
     if args.csv:

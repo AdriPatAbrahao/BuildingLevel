@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import numpy as np
 import torch
 import torch.nn as nn
@@ -84,11 +85,20 @@ class NeuralNetworkManager:
         else:
             scheduler = None
 
+        if self.metrics_dir:
+            # A call to train() starts a new history for this model fit. This
+            # prevents a repeated call in the same run directory from silently
+            # concatenating incompatible epoch series.
+            (Path(self.metrics_dir) / "epochs.ndjson").unlink(missing_ok=True)
+
         print(f"Starting training for {self.num_epochs} epochs...")
+        training_started = time.time()
+        epochs_completed = 0
         for epoch in range(self.num_epochs):
             epoch_start = time.time() if True else None
             train_loss = self._run_train_epoch(train_loader, criterion, optimizer)
             val_loss = self._run_eval_epoch(val_loader, criterion)
+            epochs_completed = epoch + 1
             if scheduler is not None:
                 scheduler.step(val_loss)
             lr = optimizer.param_groups[0]['lr']
@@ -141,6 +151,30 @@ class NeuralNetworkManager:
             )
         else:
             print("Warning: No best model state saved (perhaps training was too short or data was problematic).")
+
+        if self.metrics_dir:
+            training_summary = {
+                "training_summary_format_version": 1,
+                "epochs_requested": int(self.num_epochs),
+                "epochs_completed": int(epochs_completed),
+                "stopped_early": bool(epochs_completed < self.num_epochs),
+                "best_epoch": int(self.best_epoch) if self.best_epoch is not None else None,
+                "best_validation_loss": self.best_val_loss,
+                "elapsed_seconds": float(time.time() - training_started),
+                "train_samples": int(len(X_train_scaled)),
+                "validation_samples": int(len(X_val_scaled)),
+                "batch_size": int(self.batch_size),
+                "initial_learning_rate": float(self.learning_rate),
+                "device": str(self.device),
+                "epoch_history": "metrics/epochs.ndjson",
+            }
+            summary_path = Path(self.metrics_dir) / "training_summary.json"
+            summary_tmp = summary_path.with_suffix(".json.tmp")
+            summary_tmp.write_text(
+                json.dumps(training_summary, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            os.replace(summary_tmp, summary_path)
 
         self.is_trained = True
         print("--- NN Training Complete ---")
@@ -266,6 +300,7 @@ class NeuralNetworkManager:
         classifier=None,                  # optional sklearn validity classifier
         X_val_clf: Optional[np.ndarray] = None,
         y_val_clf: Optional[np.ndarray] = None,
+        invalid_threshold: Optional[float] = None,
         n_repeats: int = 15,
         top_n: int = 25,
         run_shap: bool = True,
@@ -349,20 +384,24 @@ class NeuralNetworkManager:
         if classifier is not None and y_val_clf is not None:
             print("\n[NNManager] Running sklearn PFI for validity classifier…")
             try:
-                classes = list(getattr(classifier, "classes_", [0, 1]))
-                idx_pos = classes.index(1) if 1 in classes else 1
+                classes = list(getattr(classifier, "classes_", []))
+                if 0 not in classes:
+                    raise ValueError("Validity classifier does not expose invalid class 0.")
+                idx_invalid = classes.index(0)
+                threshold = float(invalid_threshold) if invalid_threshold is not None else 0.5
 
                 def _predict_clf(X: np.ndarray) -> np.ndarray:
                     if hasattr(classifier, "predict_proba"):
-                        return classifier.predict_proba(X)[:, idx_pos]
-                    return classifier.predict(X).astype(float)
+                        return classifier.predict_proba(X)[:, idx_invalid]
+                    raise ValueError("Validity classifier must expose predict_proba().")
 
                 plotter.plot_permutation_importance_sklearn(
                     predict_fn=_predict_clf,
                     X_val=_Xc,
-                    y_val=np.asarray(y_val_clf, dtype=float),
+                    y_val=(np.asarray(y_val_clf, dtype=int) == 0).astype(float),
                     feature_names=feature_names,
                     task="classification",
+                    classification_threshold=threshold,
                     n_repeats=n_repeats,
                     top_n=top_n,
                     output_file="pfi_sklearn_validity_classifier.png",

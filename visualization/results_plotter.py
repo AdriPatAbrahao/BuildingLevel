@@ -5,8 +5,16 @@ matplotlib.use('Agg')  # Set non-interactive backend before importing pyplot
 import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
-from datetime import datetime
 from typing import List, Optional, Callable, Sequence
+from visualization.thesis_style import (
+    COLORS,
+    FULL_WIDTH,
+    SINGLE_COLUMN,
+    TWO_PANEL,
+    add_panel_labels,
+    apply_thesis_style,
+    save_thesis_figure,
+)
 
 class ResultsPlotter:
     def __init__(self, output_dir: Path):
@@ -14,6 +22,7 @@ class ResultsPlotter:
         self.output_dir = output_dir
         # Garante que o diretório exista (o ExperimentManager já faz isso, mas é uma boa prática)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        apply_thesis_style()
         
         print(f"ResultsPlotter configurado para salvar gráficos em: {self.output_dir.resolve()}")
         
@@ -23,10 +32,15 @@ class ResultsPlotter:
             plt.close('all')  # Close any existing figures
             
             # Create new figure
-            plt.figure(figsize=(10, 6))
+            fig, ax = plt.subplots(figsize=SINGLE_COLUMN)
             
             # Extract values for the specific material
             idx = 0 if material_type == 'steel' else 1
+            material_label = (
+                "Reinforcement steel weight (kgf)"
+                if material_type == "steel"
+                else "Concrete volume (m³)"
+            )
             pred_values = [p[idx] for p in predictions]
             true_values = [a[idx] for a in actual_values]
 
@@ -35,29 +49,36 @@ class ResultsPlotter:
                 return
             
             # Plot predicted vs actual
-            plt.scatter(true_values, pred_values, c='blue', alpha=0.5, label='Test Points')
+            ax.scatter(true_values, pred_values, color=COLORS["primary"], alpha=0.55, label='Test samples')
             print(f"Plotting {material_type}:")
             print(f"  Actual - Min: {min(true_values):.2f}, Max: {max(true_values):.2f}, Count: {len(true_values)}")
             print(f"  Predicted - Min: {min(pred_values):.2f}, Max: {max(pred_values):.2f}, Count: {len(pred_values)}")
             # Add perfect prediction line
             min_val = min(min(true_values), min(pred_values))
             max_val = max(max(true_values), max(pred_values))
-            plt.plot([min_val, max_val], [min_val, max_val], 'r--', label='Perfect Prediction')
+            ax.plot(
+                [min_val, max_val], [min_val, max_val],
+                color=COLORS["accent"], linestyle='--', label='1:1 reference line',
+            )
             
             # Calculate R² score (Coefficient of Determination)
             r2 = r2_score(true_values, pred_values)
             
             # Add labels and title
-            plt.xlabel(f'TQS Calculated {material_type.title()} {"(kgf)" if material_type=="steel" else "(m³)"}')
-            plt.ylabel(f'DNN Predicted {material_type.title()} {"(kgf)" if material_type=="steel" else "(m³)"}')
-            plt.title(f'{material_type.title()} Prediction Comparison\nR² = {r2:.3f}')
+            unit = "kgf" if material_type == "steel" else "m³"
+            ax.set_xlabel(f'Observed (TQS) [{unit}]')
+            ax.set_ylabel(f'Predicted (DNN) [{unit}]')
+            ax.set_title('Observed (TQS) vs. Predicted')
+            ax.text(
+                0.97, 0.03, f'R² = {r2:.3f}', transform=ax.transAxes,
+                ha='right', va='bottom', fontsize=9,
+            )
             
-            plt.grid(True)
-            plt.legend()
+            ax.legend()
             
             # Save and close
             filepath = self.output_dir / f'{material_type}_comparison.png'
-            plt.savefig(str(filepath))
+            save_thesis_figure(fig, filepath)
             plt.close()
         except Exception as e:
             print(f"Error plotting comparison: {str(e)}")
@@ -73,26 +94,27 @@ class ResultsPlotter:
         concrete_values = [out[1] for out in outputs] if has_concrete else []
 
         if has_concrete:
-            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=TWO_PANEL)
         else:
-            fig, ax1 = plt.subplots(1, 1, figsize=(6, 5))
+            fig, ax1 = plt.subplots(1, 1, figsize=SINGLE_COLUMN)
 
         # Steel distribution
-        ax1.hist(steel_values, bins=30)
-        ax1.set_title('Steel Distribution')
-        ax1.set_xlabel('Steel (kgf)')
+        ax1.hist(steel_values, bins=30, color=COLORS["primary"], edgecolor="white")
+        ax1.set_title('Reinforcement Steel Weight Distribution')
+        ax1.set_xlabel('Reinforcement steel weight (kgf)')
         ax1.set_ylabel('Frequency')
 
         # Concrete distribution (if present)
         if has_concrete:
-            ax2.hist(concrete_values, bins=30)
-            ax2.set_title('Concrete Distribution')
-            ax2.set_xlabel('Concrete (m³)')
+            ax2.hist(concrete_values, bins=30, color=COLORS["secondary"], edgecolor="white")
+            ax2.set_title('Concrete Volume Distribution')
+            ax2.set_xlabel('Concrete volume (m³)')
             ax2.set_ylabel('Frequency')
+            add_panel_labels([ax1, ax2])
 
         plt.tight_layout()
         filepath = self.output_dir / 'material_distribution.png'
-        plt.savefig(filepath)
+        save_thesis_figure(fig, filepath)
         plt.close()
 
         # Print statistics
@@ -114,24 +136,29 @@ class ResultsPlotter:
         """Plot residuals (prediction errors) to diagnose model bias."""
         try:
             plt.close('all')
-            plt.figure(figsize=(10, 6))
+            fig, ax = plt.subplots(figsize=SINGLE_COLUMN)
 
             idx = 0 if material_type == 'steel' else 1
+            material_label = (
+                "Reinforcement steel weight (kgf)"
+                if material_type == "steel"
+                else "Concrete volume (m³)"
+            )
             pred_values = np.array([p[idx] for p in predictions])
             true_values = np.array([a[idx] for a in actual_values])
             
             residuals = true_values - pred_values
 
-            plt.scatter(true_values, residuals, c='green', alpha=0.6)
-            plt.axhline(y=0, color='r', linestyle='--') # Zero error line
+            ax.scatter(true_values, residuals, color=COLORS["primary"], alpha=0.6)
+            ax.axhline(y=0, color=COLORS["accent"], linestyle='--')
             
-            plt.xlabel(f'Actual {material_type.title()} {"(kgf)" if material_type=="steel" else "(m³)"}')
-            plt.ylabel('Residuals (Actual - Predicted)')
-            plt.title(f'Residual Plot for {material_type.title()}')
-            plt.grid(True)
+            unit = "kgf" if material_type == "steel" else "m³"
+            ax.set_xlabel(f'Observed (TQS) [{unit}]')
+            ax.set_ylabel(f'Residual (Observed − Predicted) [{unit}]')
+            ax.set_title('Residuals vs. Observed Values')
 
             filepath = self.output_dir / f'{material_type}_residuals.png'
-            plt.savefig(str(filepath))
+            save_thesis_figure(fig, filepath)
             plt.close()
         except Exception as e:
             print(f"Error plotting residuals: {str(e)}")
@@ -151,6 +178,7 @@ class ResultsPlotter:
         n_repeats: int = 15,
         top_n: int = 25,
         random_state: int = 42,
+        classification_threshold: float = 0.5,
         output_file: str = "permutation_importance_sklearn.png",
     ) -> Optional[Path]:
         """
@@ -205,7 +233,10 @@ class ResultsPlotter:
             def score(self_, X, y):         # noqa: N805
                 preds = self_.predict(X)
                 if task == "classification":
-                    return accuracy_score(y.astype(int), (preds >= 0.5).astype(int))
+                    return accuracy_score(
+                        y.astype(int),
+                        (preds >= classification_threshold).astype(int),
+                    )
                 return float(-mean_squared_error(y, preds))
 
         scoring = "neg_mean_squared_error" if task == "regression" else "accuracy"
@@ -237,35 +268,46 @@ class ResultsPlotter:
         ]
 
         # ── Plot ─────────────────────────────────────────────────────────────
-        fig, ax = plt.subplots(figsize=(9, max(5, len(names) * 0.38)))
+        fig, ax = plt.subplots(figsize=(SINGLE_COLUMN[0], max(4.0, len(names) * 0.28)))
         y_pos  = np.arange(len(names))
-        colors = ["#2563EB" if v >= 0 else "#94A3B8" for v in imp_m]
+        colors = [COLORS["primary"] if v >= 0 else COLORS["gray"] for v in imp_m]
 
         ax.barh(
             y_pos, imp_m[::-1], xerr=imp_s[::-1],
             color=colors[::-1], edgecolor="white",
-            error_kw=dict(ecolor="#94A3B8", capsize=3, linewidth=1),
+            error_kw=dict(ecolor=COLORS["gray"], capsize=3, linewidth=1),
         )
-        ax.axvline(0, color="#EF4444", lw=1.2, linestyle="--")
+        ax.axvline(0, color=COLORS["accent"], lw=1.2, linestyle="--")
         ax.set_yticks(y_pos)
         ax.set_yticklabels(names[::-1], fontsize=9)
 
-        metric_label = "Δ neg-MSE" if task == "regression" else "Δ Accuracy"
-        ax.set_xlabel(
-            f"Variation in {metric_label} after permutation  (higher → more important)"
+        metric_label = (
+            "Increase in MSE after permutation"
+            if task == "regression"
+            else "Decrease in accuracy after permutation"
         )
-        ax.set_title(
-            f"Permutation Feature Importance — sklearn  "
-            f"({'Regressão Aço' if task == 'regression' else 'Classificador Validade'})\n"
-            f"Top {len(names)} features · {n_repeats} repeats",
+        ax.set_xlabel(f"{metric_label} (higher = more important)")
+        ax.set_title("Permutation Feature Importance — sklearn")
+        task_label = (
+            "Reinforcement Steel Regressor"
+            if task == "regression"
+            else "Structural Feasibility Classifier"
+        )
+        fig.text(
+            0.5,
+            0.93,
+            f"{task_label} · Top {len(names)} features · {n_repeats} repeats",
+            ha="center",
+            va="top",
             fontsize=11,
+            fontweight="normal",
         )
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
 
-        plt.tight_layout()
+        plt.tight_layout(rect=(0, 0, 1, 0.89))
         out = self.output_dir / output_file
-        plt.savefig(str(out), dpi=150, bbox_inches="tight")
+        save_thesis_figure(fig, out)
         plt.close("all")
         print(f"[ResultsPlotter] Saved: {out}")
         return out
@@ -384,7 +426,7 @@ class ResultsPlotter:
         fn_arr = list(feature_names)
 
         # ── Figure: beeswarm + bar (2 panels) ────────────────────────────────
-        fig, axes = plt.subplots(1, 2, figsize=(16, max(6, len(fn_arr) * 0.30)))
+        fig, axes = plt.subplots(1, 2, figsize=(FULL_WIDTH[0], max(4.0, len(fn_arr) * 0.24)))
 
         # Panel 1 — beeswarm (shows direction of impact)
         plt.sca(axes[0])
@@ -398,11 +440,7 @@ class ResultsPlotter:
                 plot_size=None,
                 max_display=min(25, len(fn_arr)),
             )
-        axes[0].set_title(
-            f"SHAP Beeswarm — {explainer_name}\n"
-            f"(saída: índice {output_index} = Aço kgf)",
-            fontsize=10,
-        )
+        axes[0].set_title(f"SHAP Beeswarm — {explainer_name}", fontsize=10)
 
         # Panel 2 — bar chart of mean |SHAP|
         mean_abs = np.abs(shap_values).mean(axis=0)
@@ -411,7 +449,7 @@ class ResultsPlotter:
         axes[1].barh(
             np.arange(len(order)),
             mean_abs[order],
-            color="#2563EB",
+            color=COLORS["primary"],
             edgecolor="white",
         )
         axes[1].set_yticks(np.arange(len(order)))
@@ -419,20 +457,26 @@ class ResultsPlotter:
             [fn_arr[i] if i < len(fn_arr) else f"f{i}" for i in order],
             fontsize=9,
         )
-        axes[1].set_xlabel("mean |SHAP value|  (impacto médio na predição)")
-        axes[1].set_title("Importância Global (mean |SHAP|)", fontsize=10)
+        axes[1].set_xlabel("Mean |SHAP value| (standardized output units)")
+        axes[1].set_title("Global Feature Importance (mean |SHAP|)", fontsize=10)
         axes[1].spines["top"].set_visible(False)
         axes[1].spines["right"].set_visible(False)
 
-        fig.suptitle(
-            f"SHAP Feature Impact — {explainer_name}  "
-            f"({exp_np.shape[0]} amostras de validação)",
-            fontsize=12,
-            fontweight="bold",
+        fig.suptitle(f"SHAP Feature Impact — {explainer_name}")
+        fig.text(
+            0.5,
+            0.94,
+            f"{exp_np.shape[0]} validation samples · Output {output_index}: "
+            "standardized reinforcement steel response",
+            ha="center",
+            va="top",
+            fontsize=11,
+            fontweight="normal",
         )
-        plt.tight_layout()
+        add_panel_labels(axes)
+        plt.tight_layout(rect=(0, 0, 1, 0.89))
         out = self.output_dir / output_file
-        plt.savefig(str(out), dpi=150, bbox_inches="tight")
+        save_thesis_figure(fig, out)
         plt.close("all")
         print(f"[ResultsPlotter] Saved: {out}")
         return out

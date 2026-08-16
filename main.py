@@ -72,6 +72,15 @@ from utils.file_handler import save_final_vectors_to_csv # Saves generated vecto
 from utils.feature_engineer import FeatureEngineer
 from utils.feature_pipeline import FeaturePipeline
 from utils.data_split import regression_train_validation_test_split
+from utils.plot_data_store import PlotDataStore
+from utils.classifier_evaluation import (
+    classifier_metrics,
+    evaluate_invalidity_rule,
+    invalid_probability_index,
+    invalid_roc_payload,
+    validity_labels_from_invalid_probability,
+    youden_threshold,
+)
 
 from utils.experiment_manager import ExperimentManager
 from config import paths # Importa o mÃ³dulo de caminhos
@@ -520,6 +529,20 @@ class BuildingOptimizer:
                 print(f"[Parallel] Generation error (iter {current_iter}): {gen_err}")
                 return None
 
+        def _fill_pipeline(pool: TQSWorkerPool) -> int:
+            """Keep every available worker slot fed despite rejected candidates."""
+            submitted = 0
+            while (
+                len(in_flight) < num_workers
+                and processed_valid + len(in_flight) < self.num_target_samples
+                and current_iter < max_iterations
+            ):
+                # Duplicate vectors and geometrically invalid candidates consume
+                # an iteration but must not shrink the active worker pool.
+                if _generate_and_submit(pool) is not None:
+                    submitted += 1
+            return submitted
+
         # ── Start the pool and fill the sliding window ────────────────────────
         validity_check_dll = bool(getattr(ParallelConfig, "VALIDITY_CHECK_DLL", False))
         with TQSWorkerPool(
@@ -528,11 +551,9 @@ class BuildingOptimizer:
             timeout_sec=timeout_sec,
             validity_check_dll=validity_check_dll,
         ) as pool:
-            # Prime: one job per worker slot
-            primed = 0
-            while primed < num_workers and current_iter < max_iterations:
-                if _generate_and_submit(pool) is not None:
-                    primed += 1
+            # Prime: one job per worker slot. Rejected candidates are replaced
+            # immediately rather than ending collection with an empty queue.
+            _fill_pipeline(pool)
 
             # Sliding-window loop: collect → replenish → repeat
             max_consec_timeouts = int(getattr(ParallelConfig, "MAX_CONSECUTIVE_TIMEOUTS", 3))
@@ -630,12 +651,9 @@ class BuildingOptimizer:
                             seed_processed=seed_processed,
                         )
 
-                # Replenish: keep pipeline full while target not reached
-                if (
-                    processed_valid < self.num_target_samples
-                    and current_iter < max_iterations
-                ):
-                    _generate_and_submit(pool)
+                # Replenish: keep the pipeline full even when one or more newly
+                # generated candidates are duplicates or geometrically invalid.
+                _fill_pipeline(pool)
 
         # ── Summary ───────────────────────────────────────────────────────────
         print(
@@ -1029,6 +1047,8 @@ class BuildingOptimizer:
         Orquestra o treinamento da pipeline, do modelo e a avaliaÃ§Ã£o final.
         Este mÃ©todo substitui a lÃ³gica que estava espalhada em _train_model e _predict_on_test_set.
         """
+        plot_data_store = PlotDataStore(self.exp_manager.run_dir)
+
         # 1. SPLIT ANTES DO SCALING E TRANSFORMAR OS DADOS
         print("\n[Step 1/5] Splitting data and fitting pipeline...")
         t_split_start = time.time()
@@ -1147,7 +1167,6 @@ class BuildingOptimizer:
             from sklearn.linear_model import LogisticRegression
             from sklearn.pipeline import make_pipeline
             from sklearn.preprocessing import StandardScaler
-            from sklearn.metrics import accuracy_score, roc_auc_score, precision_recall_fscore_support, confusion_matrix, roc_curve
             from sklearn.model_selection import train_test_split
             import joblib, json
             if len(self._clf_features) > 0 and len(self._clf_labels) > 0:
@@ -1190,21 +1209,19 @@ class BuildingOptimizer:
                     joblib.dump(clf, self.exp_manager.run_dir / "validity_classifier.pkl")
 
                     classes = list(clf.named_steps['logisticregression'].classes_)
-                    idx_invalid = int(classes.index(0)) if 0 in classes else 0
+                    idx_invalid = invalid_probability_index(classes)
 
-                    def _clf_split_metrics(y_true, y_pred) -> dict:
-                        pr, rc, f1, _ = precision_recall_fscore_support(y_true, y_pred, labels=[0, 1], zero_division=0)
-                        return {
-                            "accuracy": float(accuracy_score(y_true, y_pred)),
-                            "precision_by_class": {"0": float(pr[0]), "1": float(pr[1])},
-                            "recall_by_class": {"0": float(rc[0]), "1": float(rc[1])},
-                            "f1_by_class": {"0": float(f1[0]), "1": float(f1[1])},
-                            "confusion_matrix": confusion_matrix(y_true, y_pred, labels=[0, 1]).tolist(),
-                        }
-
-                    # --- Diagnóstico no treino (limiar padrão 0.5 do clf.predict) ---
-                    train_metrics = _clf_split_metrics(yc_train, clf.predict(Xc_train))
-                    train_metrics.update({"split": "train", "n_samples": len(Xc_train)})
+                    train_invalid_probability = clf.predict_proba(Xc_train)[:, idx_invalid]
+                    train_prediction = validity_labels_from_invalid_probability(
+                        train_invalid_probability,
+                        threshold=0.5,
+                    )
+                    train_metrics = classifier_metrics(yc_train, train_prediction)
+                    train_metrics.update({
+                        "split": "train",
+                        "n_samples": len(Xc_train),
+                        "threshold_used": 0.5,
+                    })
                     with open(self.exp_manager.get_metrics_dir() / "classifier.json", "w", encoding="utf-8") as f:
                         json.dump(train_metrics, f)
 
@@ -1212,23 +1229,19 @@ class BuildingOptimizer:
                     best_thr = 0.5
                     try:
                         proba_val = clf.predict_proba(Xc_val)
-                        y_inv_val = (np.array(yc_val) == 0).astype(int)
-                        fpr, tpr, thr = roc_curve(y_inv_val, proba_val[:, idx_invalid])
-                        roc_val_auc = float(roc_auc_score(y_inv_val, proba_val[:, idx_invalid]))
-                        roc_data = {
-                            "fpr": list(map(float, fpr)), "tpr": list(map(float, tpr)),
-                            "thresholds": list(map(float, thr)), "auc": roc_val_auc,
-                            "split": "validation", "n_samples": len(Xc_val),
-                        }
+                        roc_data = invalid_roc_payload(
+                            yc_val,
+                            proba_val[:, idx_invalid],
+                            split="validation",
+                        )
                         with open(self.exp_manager.get_metrics_dir() / "roc_curve.json", "w", encoding="utf-8") as f:
                             json.dump(roc_data, f)
 
-                        j = tpr - fpr
-                        best_idx = int(np.argmax(j))
-                        best_thr = float(thr[best_idx])
+                        best_thr = youden_threshold(roc_data)
                         with open(self.exp_manager.get_metrics_dir() / "validity_threshold.json", "w", encoding="utf-8") as f:
                             json.dump({
                                 "threshold": best_thr, "method": "youden", "class_index": idx_invalid,
+                                "probability_class": "invalid", "source_validity_label": 0,
                                 "split": "validation", "n_samples": len(Xc_val),
                             }, f)
                     except Exception as exc:
@@ -1240,26 +1253,30 @@ class BuildingOptimizer:
                     # na função objetivo (optimization/objective_function.py).
                     try:
                         proba_test = clf.predict_proba(Xc_test)
-                        y_pred_test = np.where(proba_test[:, idx_invalid] >= best_thr, 0, 1)
-                        y_inv_test = (np.array(yc_test) == 0).astype(int)
-                        test_metrics = _clf_split_metrics(yc_test, y_pred_test)
-                        test_metrics.update({
-                            "split": "test", "n_samples": len(Xc_test),
-                            "threshold_used": best_thr,
-                            "auc": float(roc_auc_score(y_inv_test, proba_test[:, idx_invalid])),
-                        })
+                        test_metrics, roc_test_data = evaluate_invalidity_rule(
+                            yc_test,
+                            proba_test[:, idx_invalid],
+                            threshold=best_thr,
+                            split="test",
+                        )
                         with open(self.exp_manager.get_metrics_dir() / "classifier_test.json", "w", encoding="utf-8") as f:
                             json.dump(test_metrics, f)
 
                         # ROC do teste é só para relato — nunca usada para calibrar nada.
-                        fpr_t, tpr_t, thr_t = roc_curve(y_inv_test, proba_test[:, idx_invalid])
-                        roc_test_data = {
-                            "fpr": list(map(float, fpr_t)), "tpr": list(map(float, tpr_t)),
-                            "thresholds": list(map(float, thr_t)), "auc": test_metrics["auc"],
-                            "split": "test", "n_samples": len(Xc_test),
-                        }
                         with open(self.exp_manager.get_metrics_dir() / "roc_curve_test.json", "w", encoding="utf-8") as f:
                             json.dump(roc_test_data, f)
+                        test_prediction = validity_labels_from_invalid_probability(
+                            proba_test[:, idx_invalid],
+                            threshold=best_thr,
+                        )
+                        plot_data_store.save_classifier_test(
+                            yc_test,
+                            proba_test[:, idx_invalid],
+                            test_prediction,
+                            invalid_threshold=best_thr,
+                            X_test=Xc_test,
+                            feature_names=feature_names,
+                        )
                     except Exception as exc:
                         print(f"Warning: failed to compute final test metrics: {exc}")
 
@@ -1295,6 +1312,7 @@ class BuildingOptimizer:
                 classifier=_clf_fi,
                 X_val_clf=_Xc_fi if (_Xc_fi is not None and len(_Xc_fi) > 0) else None,
                 y_val_clf=_yc_fi if len(_yc_fi) > 0 else None,
+                invalid_threshold=_lc2.get('best_thr'),
             )
         except Exception as _fi_exc:
             print(f"[FeatureImportance] Skipped due to error: {_fi_exc}")
@@ -1323,6 +1341,12 @@ class BuildingOptimizer:
             # Converte para arrays numpy para facilitar a indexaÃ§Ã£o por coluna
             actuals_np = np.array(actuals_final)
             predictions_np = np.array(predictions_final)
+            if actuals_np.shape[1] >= 1 and predictions_np.shape[1] >= 1:
+                plot_data_store.save_regression_test(
+                    actuals_np[:, 0],
+                    predictions_np[:, 0],
+                    sample_indices=split.test_indices,
+                )
             
             # DicionÃ¡rio para armazenar as mÃ©tricas calculadas
             final_metrics = {}
@@ -1512,13 +1536,19 @@ class BuildingOptimizer:
                     if clf_test_path.exists():
                         with open(clf_test_path, 'r', encoding='utf-8') as f:
                             obj = json.load(f)
-                        pr = obj.get('precision_by_class', {})
-                        rc = obj.get('recall_by_class', {})
-                        auc = obj.get('roc_auc')
-                        if auc is not None:
-                            clf_ok = bool(auc >= 0.80)
-                        if rc.get('0') is not None and pr.get('0') is not None:
-                            clf_ok = bool((rc['0'] >= 0.80) and (pr['0'] >= 0.60)) if clf_ok is None else (clf_ok and (rc['0'] >= 0.80) and (pr['0'] >= 0.60))
+                        precision_invalid = obj.get('precision_invalid')
+                        recall_invalid = obj.get('recall_invalid')
+                        auc_invalid = obj.get('roc_auc_invalid')
+                        if all(value is not None for value in (
+                            precision_invalid,
+                            recall_invalid,
+                            auc_invalid,
+                        )):
+                            clf_ok = bool(
+                                auc_invalid >= 0.80
+                                and recall_invalid >= 0.80
+                                and precision_invalid >= 0.60
+                            )
                 except Exception:
                     pass
                 tqs_ok = None
