@@ -14,6 +14,10 @@ from config.settings import BuildingConfig
 # Importa a arquitetura da rede neural e as configurações
 from models.dnnmodel import SimpleNN
 from config.settings import NeuralNetConfig # Importa as configurações da rede neural
+from utils.artifact_contract import (
+    current_artifact_contract,
+    validate_artifact_contract,
+)
 
 class NeuralNetworkManager:
     """
@@ -40,6 +44,9 @@ class NeuralNetworkManager:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self._last_grad_stats: dict | None = None  # populated during training epochs
         self.metrics_dir: Optional[Path] = None    # set externally by caller before train()
+        self.best_epoch: Optional[int] = None
+        self.best_val_loss: Optional[float] = None
+        self.artifact_contract: Optional[dict] = None
         print(f"NeuralNetworkManager initialized. Using device: {self.device}")
 
     def train(self, X_train_scaled: np.ndarray, y_train_scaled: np.ndarray, X_val_scaled: np.ndarray, y_val_scaled: np.ndarray) -> None:
@@ -48,10 +55,15 @@ class NeuralNetworkManager:
         """
         print("--- Preparing for NN Training with Early Stopping ---")
         print("--- NNManager: Iniciando treinamento com dados pré-normalizados ---")
-        if X_train_scaled.size == 0 or y_train_scaled.size == 0:
-            raise ValueError("Treinamento falhou: os arrays de dados normalizados estão vazios.")
-
-        self._validate_and_set_sizes(X_train_scaled, y_train_scaled)
+        self.is_trained = False
+        self.best_epoch = None
+        self.best_val_loss = None
+        self._validate_training_arrays(
+            X_train_scaled,
+            y_train_scaled,
+            X_val_scaled,
+            y_val_scaled,
+        )
 
         train_loader, val_loader = self._create_dataloaders(X_train_scaled, y_train_scaled, X_val_scaled, y_val_scaled)
 
@@ -62,6 +74,7 @@ class NeuralNetworkManager:
         best_val_loss = float('inf')
         patience_counter = 0
         best_model_state = None
+        best_epoch = None
 
         use_sched = bool(getattr(NeuralNetConfig, 'LR_SCHEDULER', False))
         if use_sched:
@@ -106,6 +119,7 @@ class NeuralNetworkManager:
             # Early Stopping logic
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
+                best_epoch = epoch + 1
                 patience_counter = 0
                 import copy as _copy
                 best_model_state = _copy.deepcopy(self.model.state_dict())  # deep copy: tensors must not share storage with the live model
@@ -119,7 +133,12 @@ class NeuralNetworkManager:
         
         if best_model_state is not None:
             self.model.load_state_dict(best_model_state) # Load the best model
-            print("Loaded best model state based on validation loss.")
+            self.best_epoch = best_epoch
+            self.best_val_loss = float(best_val_loss)
+            print(
+                "Loaded best model state based on validation loss "
+                f"(epoch {self.best_epoch}, loss {self.best_val_loss:.6f})."
+            )
         else:
             print("Warning: No best model state saved (perhaps training was too short or data was problematic).")
 
@@ -139,6 +158,21 @@ class NeuralNetworkManager:
         """
         if self.model is None or not self.is_trained:
             raise RuntimeError("Prediction failed: Model has not been trained yet or training failed. Call train() first.")
+
+        X_scaled = np.asarray(X_scaled)
+        if X_scaled.ndim != 2:
+            raise ValueError(
+                f"Prediction features must be a 2D array; got shape {X_scaled.shape}."
+            )
+        if X_scaled.shape[0] == 0:
+            raise ValueError("Prediction features cannot be empty.")
+        if X_scaled.shape[1] != self._input_size:
+            raise ValueError(
+                "Prediction feature count differs from the trained model "
+                f"({X_scaled.shape[1]} != {self._input_size})."
+            )
+        if not np.isfinite(X_scaled).all():
+            raise ValueError("Prediction features contain NaN or infinite values.")
         
         self.model.eval()
         X_tensor = torch.tensor(X_scaled, dtype=torch.float32).to(self.device)
@@ -153,21 +187,28 @@ class NeuralNetworkManager:
         Não salva mais os parâmetros de normalização.
         """
         if not self.is_trained:
-            print("Aviso: Modelo não treinado. Nada para salvar.")
-            return
+            raise RuntimeError("Não é permitido salvar um modelo não treinado.")
         
+        contract = current_artifact_contract()
+        if self._input_size != contract["input_size"]:
+            raise RuntimeError("O tamanho de entrada do modelo viola o contrato atual.")
+        if self._output_size != contract["output_size"]:
+            raise RuntimeError("O tamanho de saída do modelo viola o contrato atual.")
         checkpoint = {
+            **contract,
+            'model_family': 'pytorch_mlp',
             'model_state_dict': self.model.state_dict(),
-            'input_size': self._input_size,
-            'output_size': self._output_size,
             'hidden_layers': NeuralNetConfig.HIDDEN_LAYERS,
-            'dropout_rate': NeuralNetConfig.DROPOUT_RATE
+            'dropout_rate': NeuralNetConfig.DROPOUT_RATE,
+            'best_epoch': self.best_epoch,
+            'best_val_loss': self.best_val_loss,
         }
         try:
             torch.save(checkpoint, path)
+            self.artifact_contract = contract
             print(f"--- [SAVE SUCCESS] torch.save() executado com sucesso para o caminho: '{path}' ---")
         except Exception as e:
-            print(f"--- [SAVE FAILED] torch.save() FALHOU com um erro: {e} ---")
+            raise RuntimeError(f"Falha ao salvar modelo em '{path}': {e}") from e
     
     def load_model(self, path: Path) -> bool: # Recebe um objeto Path
         """
@@ -175,14 +216,19 @@ class NeuralNetworkManager:
         Retorna True se bem-sucedido, False caso contrário.
         """
         if not os.path.exists(path):
-            print(f"Erro: Nenhum modelo encontrado em {path}")
-            return False
+            raise FileNotFoundError(f"Nenhum modelo encontrado em {path}")
 
         try:
-            checkpoint = torch.load(path, map_location=self.device)
+            checkpoint = torch.load(path, map_location=self.device, weights_only=True)
+            contract = validate_artifact_contract(
+                checkpoint,
+                artifact_label="Neural network model",
+            )
+            if checkpoint.get('model_family') != 'pytorch_mlp':
+                raise RuntimeError("Model artifact is not a PyTorch MLP.")
             
-            self._input_size = checkpoint['input_size']
-            self._output_size = checkpoint['output_size']
+            self._input_size = contract['input_size']
+            self._output_size = contract['output_size']
             hidden_layers = checkpoint['hidden_layers']
             dropout_rate = checkpoint['dropout_rate']
 
@@ -195,14 +241,19 @@ class NeuralNetworkManager:
             
             self.model.load_state_dict(checkpoint['model_state_dict'])
             self.model.eval()
+            self.best_epoch = checkpoint.get('best_epoch')
+            self.best_val_loss = checkpoint.get('best_val_loss')
+            self.artifact_contract = contract
             
             self.is_trained = True
             print(f"Modelo carregado com sucesso de {path}")
             return True
         except Exception as e:
-            print(f"Erro ao carregar o modelo de {path}: {e}")
             self.is_trained = False
-            return False
+            self.artifact_contract = None
+            raise RuntimeError(
+                f"Modelo ausente, legado ou incompatível em '{path}': {e}"
+            ) from e
 
     def run_feature_importance_analysis(
         self,
@@ -339,18 +390,77 @@ class NeuralNetworkManager:
 
         print("[NNManager] Feature importance analysis complete.")
 
-    def _validate_and_set_sizes(self, X: np.ndarray, y: np.ndarray):
-        """Valida e define os tamanhos de entrada/saída a partir dos dados."""
-        if self._input_size != X.shape[1]:
-            print(f"Aviso: INPUT_SIZE da config ({self._input_size}) é diferente do dado ({X.shape[1]}). Usando o tamanho do dado.")
-            self._input_size = X.shape[1]
-        if self._output_size != y.shape[1]:
-            print(f"Aviso: OUTPUT_SIZE da config ({self._output_size}) é diferente do dado ({y.shape[1]}). Usando o tamanho do dado.")
-            self._output_size = y.shape[1]
+    def _validate_training_arrays(
+        self,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        X_val: np.ndarray,
+        y_val: np.ndarray,
+    ) -> None:
+        """Validate the complete train/validation contract before model creation."""
+        arrays = {
+            "X_train": np.asarray(X_train),
+            "y_train": np.asarray(y_train),
+            "X_val": np.asarray(X_val),
+            "y_val": np.asarray(y_val),
+        }
+        for name, array in arrays.items():
+            if array.ndim != 2:
+                raise ValueError(f"{name} must be a 2D array; got shape {array.shape}.")
+            if array.shape[0] == 0:
+                raise ValueError(f"{name} cannot be empty.")
+            if not np.isfinite(array).all():
+                raise ValueError(f"{name} contains NaN or infinite values.")
+
+        if arrays["X_train"].shape[0] != arrays["y_train"].shape[0]:
+            raise ValueError("X_train and y_train must contain the same number of rows.")
+        if arrays["X_val"].shape[0] != arrays["y_val"].shape[0]:
+            raise ValueError("X_val and y_val must contain the same number of rows.")
+        if arrays["X_train"].shape[1] != arrays["X_val"].shape[1]:
+            raise ValueError("Training and validation feature counts must match.")
+        if arrays["y_train"].shape[1] != arrays["y_val"].shape[1]:
+            raise ValueError("Training and validation output counts must match.")
+        if arrays["X_train"].shape[1] != self._input_size:
+            raise ValueError(
+                "Training feature count differs from NeuralNetConfig.INPUT_SIZE "
+                f"({arrays['X_train'].shape[1]} != {self._input_size})."
+            )
+        if arrays["y_train"].shape[1] != self._output_size:
+            raise ValueError(
+                "Training output count differs from NeuralNetConfig.OUTPUT_SIZE "
+                f"({arrays['y_train'].shape[1]} != {self._output_size})."
+            )
+        if arrays["X_train"].shape[0] < 2:
+            raise ValueError(
+                "At least two training samples are required because the model uses BatchNorm1d."
+            )
+
+    def _safe_train_batch_size(self, num_samples: int) -> int:
+        """Choose a batch size that never leaves a one-sample BatchNorm batch."""
+        if num_samples < 2:
+            raise ValueError("At least two training samples are required.")
+        if self.batch_size < 2:
+            raise ValueError("NeuralNetConfig.BATCH_SIZE must be at least 2.")
+
+        candidate = min(int(self.batch_size), int(num_samples))
+        while candidate >= 2:
+            if num_samples % candidate != 1:
+                return candidate
+            candidate -= 1
+        return int(num_samples)
 
     def _create_dataloaders(self, X_train: np.ndarray, y_train: np.ndarray, X_val: np.ndarray, y_val: np.ndarray) -> Tuple[DataLoader, DataLoader]:
         train_dataset = TensorDataset(torch.tensor(X_train, dtype=torch.float32), torch.tensor(y_train, dtype=torch.float32))
-        train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True)
+        train_batch_size = self._safe_train_batch_size(len(train_dataset))
+        from config.settings import RunConfig
+        generator = torch.Generator()
+        generator.manual_seed(int(getattr(RunConfig, "SEED", 42)))
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=train_batch_size,
+            shuffle=True,
+            generator=generator,
+        )
 
         val_dataset = TensorDataset(torch.tensor(X_val, dtype=torch.float32), torch.tensor(y_val, dtype=torch.float32))
         val_loader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False)
@@ -378,6 +488,7 @@ class NeuralNetworkManager:
         """Executa uma época de treino."""
         self.model.train()
         total_loss = 0.0
+        total_samples = 0
         last_stats_mean = {}
         last_stats_norm = {}
         for i, (batch_X, batch_y) in enumerate(loader):
@@ -399,18 +510,27 @@ class NeuralNetworkManager:
                 except Exception:
                     pass
             optimizer.step()
-            total_loss += loss.item()
+            batch_samples = int(batch_X.shape[0])
+            total_loss += loss.item() * batch_samples
+            total_samples += batch_samples
         self._last_grad_stats = {'mean_abs': last_stats_mean, 'l2_norm': last_stats_norm}
-        return total_loss / len(loader)
+        if total_samples == 0:
+            raise ValueError("Training DataLoader produced no samples.")
+        return total_loss / total_samples
 
     def _run_eval_epoch(self, loader: DataLoader, criterion: nn.Module) -> float:
         """Executa uma época de avaliação (validação)."""
         self.model.eval()
         total_loss = 0.0
+        total_samples = 0
         with torch.no_grad():
             for batch_X, batch_y in loader:
                 batch_X, batch_y = batch_X.to(self.device), batch_y.to(self.device)
                 outputs = self.model(batch_X)
                 loss = criterion(outputs, batch_y)
-                total_loss += loss.item()
-        return total_loss / len(loader)
+                batch_samples = int(batch_X.shape[0])
+                total_loss += loss.item() * batch_samples
+                total_samples += batch_samples
+        if total_samples == 0:
+            raise ValueError("Validation DataLoader produced no samples.")
+        return total_loss / total_samples

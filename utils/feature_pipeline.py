@@ -5,6 +5,10 @@ import joblib # Usaremos joblib para salvar/carregar os scalers de forma robusta
 
 from geometry.length_input_processor import LengthProcessor
 from utils.feature_engineer import FeatureEngineer
+from utils.artifact_contract import (
+    current_artifact_contract,
+    validate_artifact_contract,
+)
 
 class FeaturePipeline:
     """
@@ -19,6 +23,7 @@ class FeaturePipeline:
         self.scaler_X = StandardScaler()
         self.scaler_y = StandardScaler()
         self.is_fitted = False # Flag para saber se os scalers foram treinados
+        self.artifact_contract = None
 
     def fit_transform(self, feature_vectors: List[List[float]], outputs: List[List[float]]) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -134,17 +139,50 @@ class FeaturePipeline:
     def save(self, path: str = "feature_pipeline.pkl"):
         """Persist fitted scalers to a file using `joblib`."""
         if not self.is_fitted:
-            print("Aviso: Tentando salvar uma pipeline não treinada.")
-            return
-        joblib.dump({'scaler_X': self.scaler_X, 'scaler_y': self.scaler_y}, path)
+            raise RuntimeError("Não é permitido salvar uma pipeline não ajustada.")
+        contract = current_artifact_contract()
+        scaler_input = getattr(self.scaler_X, "n_features_in_", None)
+        scaler_output = getattr(self.scaler_y, "n_features_in_", None)
+        if scaler_input != contract["input_size"]:
+            raise RuntimeError(
+                f"Scaler de features incompatível ({scaler_input} != {contract['input_size']})."
+            )
+        if scaler_output != contract["output_size"]:
+            raise RuntimeError(
+                f"Scaler do alvo incompatível ({scaler_output} != {contract['output_size']})."
+            )
+        payload = {
+            **contract,
+            'scaler_X': self.scaler_X,
+            'scaler_y': self.scaler_y,
+        }
+        joblib.dump(payload, path)
+        self.artifact_contract = contract
         print(f"Pipeline (scalers) salva em {path}")
 
     def load(self, path: str = "feature_pipeline.pkl"):
         """Load scalers from file and mark the pipeline as fitted."""
         try:
             scalers = joblib.load(path)
+            contract = validate_artifact_contract(
+                scalers,
+                artifact_label="Feature pipeline",
+            )
+            if 'scaler_X' not in scalers or 'scaler_y' not in scalers:
+                raise RuntimeError("Feature pipeline does not contain both fitted scalers.")
+            scaler_input = getattr(scalers['scaler_X'], "n_features_in_", None)
+            scaler_output = getattr(scalers['scaler_y'], "n_features_in_", None)
+            if scaler_input != contract["input_size"]:
+                raise RuntimeError(
+                    f"Feature scaler size is incompatible ({scaler_input} != {contract['input_size']})."
+                )
+            if scaler_output != contract["output_size"]:
+                raise RuntimeError(
+                    f"Target scaler size is incompatible ({scaler_output} != {contract['output_size']})."
+                )
             self.scaler_X = scalers['scaler_X']
             self.scaler_y = scalers['scaler_y']
+            self.artifact_contract = contract
             self.is_fitted = True
             print(f"Pipeline (scalers) carregada de {path}")
         except FileNotFoundError:

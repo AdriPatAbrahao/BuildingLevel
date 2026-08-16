@@ -533,22 +533,37 @@ Dois escaladores independentes são mantidos:
 
 ### 7.2 Protocolo de Divisão para Evitar Vazamento de Dados
 
-O ajuste (*fit*) dos escaladores ocorre **exclusivamente** sobre o conjunto de treino, **nunca** sobre validação ou teste. O protocolo rigoroso é:
+O ajuste (*fit*) dos escaladores ocorre **exclusivamente** sobre o conjunto de treino, **nunca** sobre validação ou teste. As 230 amostras do piloto já foram usadas na análise exploratória de features e de modelos; por isso, elas são obrigatoriamente mantidas no conjunto de desenvolvimento e não são elegíveis para o teste final.
+
+O protocolo rigoroso é:
 
 ```python
-# 1. Divisão estratificada antes de qualquer normalização
-X_train_val, X_test = train_test_split(X, test_size=0.15, random_state=42)
-X_train, X_val      = train_test_split(X_train_val, test_size=0.20, random_state=42)
+# 1. Índices 0:230 são protegidos como desenvolvimento já utilizado
+indices_piloto = indices[:230]
+indices_novos  = indices[230:]
 
-# 2. Ajuste apenas no treino
+# 2. Teste final: 15% do total, sorteado somente entre amostras novas
+indices_desenvolvimento_novos, indices_teste = split_estratificado_por_faixas(
+    indices_novos, n_test=375, random_state=42
+)
+indices_desenvolvimento = indices_piloto + indices_desenvolvimento_novos
+
+# 3. Treino/validação também são estratificados por faixas do alvo
+indices_treino, indices_validacao = split_estratificado_por_faixas(
+    indices_desenvolvimento, validation_ratio=0.20, random_state=42
+)
+
+# 4. Ajuste apenas no treino
 scaler_X.fit(X_train)
 scaler_y.fit(y_train)
 
-# 3. Transformação de todos os subconjuntos com o mesmo escalador
+# 5. Transformação de todos os subconjuntos com o mesmo escalador
 X_train_sc = scaler_X.transform(X_train)   # dados vistos no fit
 X_val_sc   = scaler_X.transform(X_val)     # dados não vistos no fit
 X_test_sc  = scaler_X.transform(X_test)    # dados não vistos no fit
 ```
+
+A estratificação usa até 10 faixas balanceadas pelo posto (*rank*) do consumo de aço. Isso reduz a possibilidade de concentrar valores muito baixos ou muito altos em apenas um subconjunto. Os índices, estatísticas do alvo, proporções efetivas e hash do dataset são persistidos em `metrics/split_manifest.json`; os mesmos índices também são incluídos em `arrays.npz`.
 
 As proporções resultantes com 2500 amostras:
 - **Treino:** ~1700 amostras (68%)
@@ -558,6 +573,8 @@ As proporções resultantes com 2500 amostras:
 ### 7.3 Persistência da Pipeline
 
 Os escaladores são serializados com `joblib` para o arquivo `feature_pipeline.pkl` dentro do diretório do experimento. Durante a inferência, os mesmos escaladores são carregados, garantindo transformação idêntica à usada durante o treinamento.
+
+O modelo e a pipeline carregam o mesmo contrato semântico versionado: versão do formato do artefato, versão do schema, nomes e ordem das 23 features, nome e unidade do alvo, `INPUT_SIZE` e `OUTPUT_SIZE`. Um artefato legado, incompleto ou divergente é recusado; o código não renomeia, reordena nem trunca features automaticamente.
 
 ---
 
@@ -596,7 +613,7 @@ Saída:
 Saída: ŷ ∈ ℝ¹ (consumo de aço normalizado)
 ```
 
-**Total de parâmetros:** ~32.705 parâmetros treináveis.
+**Total de parâmetros:** 28.545 parâmetros treináveis.
 
 ### 8.3 Componentes de Regularização
 
@@ -674,7 +691,21 @@ O número máximo de épocas é 500. Na prática, o early stopping tipicamente e
 
 - `batch_size = 32`
 - Embaralhamento (`shuffle=True`) apenas no treino; sem embaralhamento em validação
+- O gerador do embaralhamento usa a semente global do experimento
+- Se o tamanho configurado produzir um último lote com apenas uma amostra, o
+  tamanho efetivo do lote é reduzido para preservar todas as amostras e manter
+  o `BatchNorm1d` válido
 - `float32` para compatibilidade com GPU via CUDA
+
+A perda de cada época é a média ponderada pelo número de amostras de cada
+mini-batch. Portanto, um último lote menor não recebe o mesmo peso de um lote
+completo. Antes da criação do modelo, treino e validação também são verificados
+quanto a dimensionalidade, número de linhas, valores não finitos e aderência a
+`INPUT_SIZE` e `OUTPUT_SIZE`; divergências interrompem o treinamento em vez de
+alterar silenciosamente a arquitetura.
+
+A época e a loss correspondentes ao melhor estado restaurado são armazenadas
+no arquivo do modelo como `best_epoch` e `best_val_loss`.
 
 ### 9.6 Logging de Gradientes
 
@@ -742,7 +773,70 @@ deve ser repetida com a DNN e conjunto de teste finais. A importância do
 classificador foi adiada porque a coleta intermediária contém somente 23 casos
 inválidos.
 
-### 10.4 Artefatos Persistidos por Experimento
+### 10.4 Triagem Preliminar de Família e Hiperparâmetros
+
+Antes da coleta final, o afinador legado — que ainda pressupunha duas saídas e
+possuía erro de sintaxe — foi substituído por uma avaliação exclusiva do alvo
+de aço. Foram comparados 10 candidatos:
+
+- MLPs `[32,16]`, `[64,32]` e `[128,128,64]`;
+- MSE e Huber Loss para cada MLP;
+- quatro configurações de Extra Trees, com `min_samples_leaf ∈ {1,2}` e
+  `max_features ∈ {0,8; 1,0}`.
+
+O protocolo usou as 230 amostras piloto como desenvolvimento, com `5 folds × 3
+repetições`, estratificação por faixas do consumo de aço e um split interno de
+20% para early stopping das MLPs. O mesmo split interno foi retirado do ajuste
+das árvores para manter igual o número de amostras efetivamente ajustadas. Não
+foi salvo modelo de produção.
+
+Resultados principais:
+
+| Candidato | MAE médio | RMSE médio | R² médio | P90 de subestimação | MAE no quartil inferior |
+|---|---:|---:|---:|---:|---:|
+| Extra Trees, leaf=2, max_features=0,8 | 19,11 kgf | 24,96 kgf | 0,9682 | 28,36 kgf | 25,12 kgf |
+| MLP `[64,32]`, dropout=0,1, Huber | 22,88 kgf | 28,08 kgf | 0,9594 | 35,11 kgf | 25,75 kgf |
+| MLP atual `[128,128,64]`, dropout=0,2, MSE | 23,97 kgf | 29,38 kgf | 0,9551 | 36,59 kgf | 27,60 kgf |
+
+Na comparação pareada dos 15 folds, a melhor Extra Trees reduziu o MAE da MLP
+atual em média `4,86 kgf`, foi melhor em 80% dos folds e apresentou intervalo
+bootstrap aproximado de 95% entre `2,83 e 6,95 kgf`. A MLP `[64,32] + Huber`
+melhorou em média `1,09 kgf`, mas seu intervalo `[-0,40; 2,82] kgf` inclui zero;
+portanto, ainda não há evidência suficiente para afirmar que ela supera a MLP
+atual.
+
+A conclusão é provisória: Extra Trees e a MLP `[64,32] + Huber` formam a lista
+curta, mas a escolha de produção será repetida após as 2.500 amostras usando
+somente o conjunto de desenvolvimento. O teste final permanecerá intocado. Os
+resultados completos estão em `outputs/validation/teste17/model_tuning/`.
+
+### 10.5 Repetibilidade dos Rótulos do TQS antes da Coleta Final
+
+Antes de iniciar as 2.500 amostras, três geometrias conhecidas da coleta de 230
+casos foram novamente processadas três vezes cada: a semente (índice 0), o caso
+de menor consumo de aço (índice 101) e o caso de maior consumo (índice 218). Foi
+usado um único worker no slot isolado `ValRep816B_01`, com ordem intercalada por
+rodada (`semente → mínimo → máximo`) para também detectar eventual estado
+residual deixado pela geometria anterior.
+
+Antes das chamadas ao TQS, as features foram recalculadas a partir das geometrias
+salvas e comparadas com os vetores do checkpoint. As nove execuções tiveram
+validação estrutural independente pelas DLLs e seus relatórios foram arquivados.
+O critério de aprovação admitia no máximo 1 kgf de variação do aço e 0,001 m³ do
+concreto, mas os resultados foram exatamente repetíveis:
+
+| Caso | Índice | Aço nas três execuções | Concreto nas três execuções | Diferença máxima para o checkpoint |
+|---|---:|---:|---:|---:|
+| Semente | 0 | 730,0 kgf | 16,02 m³ | 0,0 kgf |
+| Mínimo de aço | 101 | 291,0 kgf | 12,01 m³ | 0,0 kgf |
+| Máximo de aço | 218 | 1001,0 kgf | 18,36 m³ | 0,0 kgf |
+
+Portanto, não foi observado ruído numérico, contaminação entre análises ou
+divergência em relação aos rótulos da coleta intermediária. Nenhum treinamento
+foi executado nesse teste. O checkpoint, o resumo e os nove relatórios estão em
+`outputs/validation/teste18/tqs_repeatability/`.
+
+### 10.6 Artefatos Persistidos por Experimento
 
 Cada execução de treinamento cria um diretório autocontido em `outputs/experiments/<timestamp>/` com:
 
@@ -926,9 +1020,20 @@ A classe `BuildingInference` encapsula toda a lógica de predição pós-treinam
 3. **Predição de concreto:** cálculo geométrico via `get_geometric_concrete_volume`
 4. **Predição de validade:** `prob_invalid = classifier.predict_proba(features_raw)[0, idx_invalid]`
 
-### 14.2 Seleção Automática de Experimento
+### 14.2 Seleção Explícita e Contrato dos Artefatos
 
-O sistema identifica o experimento mais recente automaticamente, varrendo `outputs/experiments/` e selecionando o diretório com timestamp mais recente que contenha `trained_model.pth`. Um `EXPERIMENT_ID` específico pode ser forçado via variável de ambiente `BUILDOPT_EXPERIMENT_ID`.
+O experimento deve ser indicado explicitamente pelo argumento de `BuildingInference` ou pela variável de ambiente `BUILDOPT_EXPERIMENT_ID`. Se o identificador não existir, a inicialização falha; não há fallback para o diretório mais recente.
+
+Antes de qualquer previsão são verificados:
+
+- igualdade entre os contratos do `trained_model.pth` e do `feature_pipeline.pkl`;
+- `FEATURE_SCHEMA_VERSION = 11`;
+- nomes e ordem exatos das features;
+- alvo `column_steel_weight`, em `kgf`;
+- dimensões do modelo, scalers e vetor recalculado pelo `FeatureEngineer`;
+- presença de valores finitos no vetor de inferência.
+
+Qualquer divergência cancela a inferência com erro explícito.
 
 ---
 
@@ -943,7 +1048,7 @@ Cada execução de treinamento cria um diretório com timestamp no formato:
 
 ### 15.2 Snapshot de Configurações
 
-No início de cada experimento, todas as configurações (`BuildingConfig`, `RunConfig`, `NeuralNetConfig`, `VectorConfig`) são serializadas em `config_snapshot.json`, garantindo reprodutibilidade total.
+No início de cada experimento, as configurações (`BuildingConfig`, `RunConfig`, `DataSplitConfig`, `NeuralNetConfig`, `ParallelConfig`, `ObjectiveConfig`, `VectorConfig`) e o contrato de features/alvo são serializados em `config_snapshot.json`, garantindo reprodutibilidade do contexto de treinamento.
 
 ### 15.3 Semente Aleatória
 
@@ -1030,6 +1135,8 @@ main.py
 | `EARLY_STOPPING_PATIENCE` | 50 |
 | `TEST_SPLIT_RATIO` | 0,15 |
 | `VALIDATION_SPLIT_RATIO` | 0,20 |
+| `PREUSED_DEVELOPMENT_PREFIX_SAMPLES` | 230 (nunca entram no teste final) |
+| `REGRESSION_STRATIFICATION_BINS` | 10 |
 | `LOSS_TYPE` | MSE (configurável para Huber) |
 | `WEIGHT_DECAY` | 1×10⁻⁴ |
 | `LR_SCHEDULER_PATIENCE` | 10 épocas |

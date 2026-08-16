@@ -66,6 +66,16 @@ class NeuralNetConfig:
     LR_SCHEDULER_PATIENCE = 10
     LR_SCHEDULER_FACTOR = 0.5
 
+
+class DataSplitConfig:
+    """Regras do protocolo experimental para o conjunto de regressão."""
+
+    # As primeiras 230 amostras já participaram da análise exploratória de
+    # features e hiperparâmetros. Elas podem ser usadas no desenvolvimento,
+    # mas nunca na estimativa final de generalização.
+    PREUSED_DEVELOPMENT_PREFIX_SAMPLES = 230
+    REGRESSION_STRATIFICATION_BINS = 10
+
 class ParallelConfig:
     """
     Controls the parallel TQS data-generation pool.

@@ -7,6 +7,7 @@ import shutil
 # Importe suas classes de configuração para poder tirar um "snapshot" delas
 from config.settings import (
     BuildingConfig,
+    DataSplitConfig,
     NeuralNetConfig,
     ObjectiveConfig,
     ParallelConfig,
@@ -14,6 +15,7 @@ from config.settings import (
 )
 from config.constants import DEFAULT_BEAM_WIDTH_CM # Exemplo de constante
 from config.vector_config import VectorConfig
+from utils.artifact_contract import current_artifact_contract
 
 class ExperimentManager:
     """
@@ -74,6 +76,7 @@ class ExperimentManager:
         config_snapshot = {
             "BuildingConfig": {k: v for k, v in vars(BuildingConfig).items() if not k.startswith('__')},
             "RunConfig": {k: v for k, v in vars(RunConfig).items() if not k.startswith('__')},
+            "DataSplitConfig": {k: v for k, v in vars(DataSplitConfig).items() if not k.startswith('__')},
             "NeuralNetConfig": {k: v for k, v in vars(NeuralNetConfig).items() if not k.startswith('__')},
             "ParallelConfig": {k: v for k, v in vars(ParallelConfig).items() if not k.startswith('__')},
             "ObjectiveConfig": {k: v for k, v in vars(ObjectiveConfig).items() if not k.startswith('__')},
@@ -83,7 +86,8 @@ class ExperimentManager:
             },
             "Constants": {
                 "BEAM_THICKNESS_CM": DEFAULT_BEAM_WIDTH_CM,
-            }
+            },
+            "FeatureContract": current_artifact_contract(),
         }
         
         # Converte Paths para strings para serem serializáveis em JSON

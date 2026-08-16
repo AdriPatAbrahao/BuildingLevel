@@ -38,7 +38,7 @@ import os
 
 # Project-specific imports
 # Configuration - Make sure these files exist and are configured
-from config.settings import BuildingConfig, RunConfig, NeuralNetConfig, ParallelConfig, ObjectiveConfig # General settings, NN config, analysis mode flag
+from config.settings import BuildingConfig, DataSplitConfig, RunConfig, NeuralNetConfig, ParallelConfig, ObjectiveConfig # General settings, NN config, analysis mode flag
 from config.paths import FINAL_VECTORS_CSV_PATH # Path for saving final vectors CSV
 
 # Algorithm components - Core logic for processing and ML
@@ -71,6 +71,7 @@ from utils.geometric_calculator import get_geometric_concrete_volume # Fast geom
 from utils.file_handler import save_final_vectors_to_csv # Saves generated vectors to CSV
 from utils.feature_engineer import FeatureEngineer
 from utils.feature_pipeline import FeaturePipeline
+from utils.data_split import regression_train_validation_test_split
 
 from utils.experiment_manager import ExperimentManager
 from config import paths # Importa o mÃ³dulo de caminhos
@@ -1029,17 +1030,49 @@ class BuildingOptimizer:
         Este mÃ©todo substitui a lÃ³gica que estava espalhada em _train_model e _predict_on_test_set.
         """
         # 1. SPLIT ANTES DO SCALING E TRANSFORMAR OS DADOS
-        from sklearn.model_selection import train_test_split
         print("\n[Step 1/5] Splitting data and fitting pipeline...")
         t_split_start = time.time()
         _seed = getattr(RunConfig, 'SEED', 42)
-        X_train_val, X_test, y_train_val, y_test = train_test_split(
-            feature_vectors, output_values, test_size=getattr(NeuralNetConfig, "TEST_SPLIT_RATIO", 0.15), random_state=_seed
+        X_all = np.asarray(feature_vectors, dtype=np.float32)
+        y_all = np.asarray(output_values, dtype=np.float32)
+        split = regression_train_validation_test_split(
+            y_all[:, 0],
+            test_ratio=getattr(NeuralNetConfig, "TEST_SPLIT_RATIO", 0.15),
+            validation_ratio_of_development=getattr(
+                NeuralNetConfig, "VALIDATION_SPLIT_RATIO", 0.2
+            ),
+            random_state=_seed,
+            preused_development_prefix=getattr(
+                DataSplitConfig, "PREUSED_DEVELOPMENT_PREFIX_SAMPLES", 0
+            ),
+            max_stratification_bins=getattr(
+                DataSplitConfig, "REGRESSION_STRATIFICATION_BINS", 10
+            ),
         )
-        X_train, X_val, y_train, y_val = train_test_split(
-            X_train_val, y_train_val, test_size=getattr(NeuralNetConfig, "VALIDATION_SPLIT_RATIO", 0.2), random_state=_seed
-        )
+        X_train, y_train = X_all[split.train_indices], y_all[split.train_indices]
+        X_val, y_val = X_all[split.validation_indices], y_all[split.validation_indices]
+        X_test, y_test = X_all[split.test_indices], y_all[split.test_indices]
         t_split_end = time.time()
+
+        h = hashlib.sha256()
+        h.update(X_all.tobytes())
+        h.update(y_all.tobytes())
+        dataset_hash = h.hexdigest()
+        split_manifest = split.as_manifest(y_all[:, 0])
+        split_manifest.update({
+            "dataset_hash": dataset_hash,
+            "dataset_samples": int(len(X_all)),
+            "test_ratio_of_total": float(len(X_test) / len(X_all)),
+            "validation_ratio_of_total": float(len(X_val) / len(X_all)),
+            "train_ratio_of_total": float(len(X_train) / len(X_all)),
+        })
+        with open(
+            self.exp_manager.get_metrics_dir() / "split_manifest.json",
+            "w",
+            encoding="utf-8",
+        ) as split_file:
+            json.dump(split_manifest, split_file, ensure_ascii=False, indent=2)
+
         self.feature_pipeline.fit(X_train, y_train)
         t_scale_start = time.time()
         X_train_scaled = self.feature_pipeline.transform_features(X_train)
@@ -1052,33 +1085,25 @@ class BuildingOptimizer:
 
         # ── Save raw + scaled arrays for post-training analysis ───────────────
         # Enables running nn_diagnostics.py standalone later without retraining.
-        try:
-            np.savez_compressed(
-                self.exp_manager.run_dir / "arrays.npz",
-                X_train=np.array(X_train, dtype=np.float32),
-                X_val=np.array(X_val, dtype=np.float32),
-                X_test=np.array(X_test, dtype=np.float32),
-                y_train=np.array(y_train, dtype=np.float32),
-                y_val=np.array(y_val, dtype=np.float32),
-                y_test=np.array(y_test, dtype=np.float32),
-                X_train_scaled=X_train_scaled,
-                X_val_scaled=X_val_scaled,
-                X_test_scaled=X_test_scaled,
-                y_train_scaled=y_train_scaled,
-                y_val_scaled=y_val_scaled,
-                y_test_scaled=y_test_scaled,
-            )
-            print(f"[Arrays] Saved arrays.npz ({len(X_train)} train / {len(X_val)} val / {len(X_test)} test)")
-        except Exception as _e_arr:
-            print(f"[Arrays] Failed to save arrays.npz: {_e_arr}")
-
-        try:
-            h = hashlib.sha256()
-            h.update(np.array(feature_vectors, dtype=np.float32).tobytes())
-            h.update(np.array(output_values, dtype=np.float32).tobytes())
-            dataset_hash = h.hexdigest()
-        except Exception:
-            dataset_hash = None
+        np.savez_compressed(
+            self.exp_manager.run_dir / "arrays.npz",
+            X_train=X_train,
+            X_val=X_val,
+            X_test=X_test,
+            y_train=y_train,
+            y_val=y_val,
+            y_test=y_test,
+            train_indices=split.train_indices,
+            validation_indices=split.validation_indices,
+            test_indices=split.test_indices,
+            X_train_scaled=X_train_scaled,
+            X_val_scaled=X_val_scaled,
+            X_test_scaled=X_test_scaled,
+            y_train_scaled=y_train_scaled,
+            y_val_scaled=y_val_scaled,
+            y_test_scaled=y_test_scaled,
+        )
+        print(f"[Arrays] Saved arrays.npz ({len(X_train)} train / {len(X_val)} val / {len(X_test)} test)")
         try:
             print(f"[DEBUG MAIN] Exemplo de feature NORMALIZADA (train): {X_train_scaled[0]}")
         except Exception:
@@ -1382,7 +1407,13 @@ class BuildingOptimizer:
                 "num_test_samples": len(actuals_final),
                 "splits": {
                     "test_ratio": getattr(NeuralNetConfig, "TEST_SPLIT_RATIO", None),
-                    "val_ratio": getattr(NeuralNetConfig, "VALIDATION_SPLIT_RATIO", None)
+                    "val_ratio_of_development": getattr(NeuralNetConfig, "VALIDATION_SPLIT_RATIO", None),
+                    "effective_train_ratio": float(len(X_train) / len(X_all)),
+                    "effective_validation_ratio": float(len(X_val) / len(X_all)),
+                    "effective_test_ratio": float(len(X_test) / len(X_all)),
+                    "preused_development_prefix": split.preused_development_prefix,
+                    "test_contains_preused_samples": False,
+                    "manifest": "metrics/split_manifest.json",
                 },
                 "nn_architecture": {
                     "hidden_layers": getattr(NeuralNetConfig, "HIDDEN_LAYERS", None),

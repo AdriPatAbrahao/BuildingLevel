@@ -56,17 +56,10 @@ class BuildingInference:
             eid = experiment_id or os.getenv("BUILDOPT_EXPERIMENT_ID") or _DEFAULT_EXPERIMENT_ID
             exp_dir = paths.EXPERIMENTS_DIR / eid
             if not exp_dir.exists():
-                base = paths.EXPERIMENTS_DIR
-                latest = None
-                if base.exists():
-                    dirs = [d for d in base.iterdir() if d.is_dir()]
-                    if dirs:
-                        dirs.sort(key=lambda p: p.stat().st_mtime)
-                        latest = dirs[-1]
-                if latest is None:
-                    raise FileNotFoundError(f"Diretório do experimento não encontrado: '{exp_dir}'")
-                print(f"Info: EXPERIMENT_ID '{eid}' não encontrado. Usando o mais recente '{latest.name}'.")
-                exp_dir = latest
+                raise FileNotFoundError(
+                    f"Diretório do experimento não encontrado: '{exp_dir}'. "
+                    "Informe explicitamente um experimento treinado compatível."
+                )
 
             # Store paths as instance attributes — all methods use self.exp_dir etc.
             self.exp_dir = exp_dir
@@ -85,6 +78,10 @@ class BuildingInference:
             self.input_processor = self.feature_pipeline.input_processor
             if not self.nn_manager.load_model(self._model_path):
                 raise RuntimeError("Falha ao carregar o modelo treinado.")
+            if self.feature_pipeline.artifact_contract != self.nn_manager.artifact_contract:
+                raise RuntimeError(
+                    "Os contratos semânticos do modelo e da pipeline são diferentes."
+                )
 
             classifier_path = self.exp_dir / "validity_classifier.pkl"
             if classifier_path.exists():
@@ -210,8 +207,9 @@ class BuildingInference:
         """
         try:
             if not self._config_snapshot_path.exists():
-                print(f"AVISO: Snapshot de configuração não encontrado em '{self._config_snapshot_path}'.")
-                return
+                raise RuntimeError(
+                    f"Snapshot de configuração não encontrado em '{self._config_snapshot_path}'."
+                )
 
             with open(self._config_snapshot_path, 'r', encoding='utf-8') as f:
                 snap = json.load(f)
@@ -262,6 +260,7 @@ class BuildingInference:
             # Feature size checks
             snn = snap.get('NeuralNetConfig', {})
             snap_input_size = snn.get('INPUT_SIZE') if snn else None
+            snap_schema = snn.get('FEATURE_SCHEMA_VERSION') if snn else None
             scaler_in = getattr(self.feature_pipeline.scaler_X, 'n_features_in_', None)
             model_input = getattr(self.nn_manager, '_input_size', None)
 
@@ -275,28 +274,29 @@ class BuildingInference:
                     fv = FeatureEngineer(col_polys, beam_defs).extract_features()
                     computed_len = len(fv)
             except Exception as e:
-                print(f"AVISO: Falha ao estimar tamanho de features atual: {e}")
+                hard_mismatches.append(
+                    f"Falha ao recalcular as features atuais a partir do CSV semente: {e}"
+                )
 
-            # Snapshot divergente é apenas aviso; o que importa é compatibilidade entre modelo e pipeline/features
+            # O contrato dos artefatos já valida nomes e ordem. O snapshot e a
+            # recomputação independente abaixo validam o contexto do experimento.
+            if snap_schema != NeuralNetConfig.FEATURE_SCHEMA_VERSION:
+                hard_mismatches.append(
+                    "FEATURE_SCHEMA_VERSION diverge entre snapshot e código atual "
+                    f"({snap_schema!r} != {NeuralNetConfig.FEATURE_SCHEMA_VERSION!r})"
+                )
             if snap_input_size is not None and scaler_in is not None and snap_input_size != scaler_in:
-                soft_warnings.append(f"INPUT_SIZE (snapshot vs scaler) diverge: {snap_input_size} vs {scaler_in}")
+                hard_mismatches.append(f"INPUT_SIZE (snapshot vs scaler) diverge: {snap_input_size} vs {scaler_in}")
             if snap_input_size is not None and computed_len is not None and snap_input_size != computed_len:
-                soft_warnings.append(f"INPUT_SIZE (snapshot vs features) diverge: {snap_input_size} vs {computed_len}")
+                hard_mismatches.append(f"INPUT_SIZE (snapshot vs features) diverge: {snap_input_size} vs {computed_len}")
 
-            # Regras duras: modelo deve bater com scaler; features podem ter extras (faremos corte automático)
+            # Regras duras: modelo, scaler e extrator devem coincidir exatamente.
             if model_input is not None and scaler_in is not None and model_input != scaler_in:
                 hard_mismatches.append(f"INPUT_SIZE incompatível: modelo={model_input}, scaler={scaler_in}")
-            if model_input is not None and computed_len is not None:
-                if computed_len < model_input:
-                    # Faltando features necessárias para o modelo: erro crítico
-                    hard_mismatches.append(
-                        f"INPUT_SIZE insuficiente: modelo={model_input}, features_atual={computed_len}"
-                    )
-                elif computed_len > model_input:
-                    # Features atuais têm colunas a mais: aceitável, faremos slice; apenas aviso
-                    soft_warnings.append(
-                        f"INPUT_SIZE maior nas features atuais ({computed_len}) que o modelo ({model_input}); será aplicado corte automático."
-                    )
+            if model_input is not None and computed_len is not None and computed_len != model_input:
+                hard_mismatches.append(
+                    f"INPUT_SIZE incompatível: modelo={model_input}, features_atual={computed_len}"
+                )
 
             if soft_warnings:
                 print("AVISOS de snapshot/configuração:\n - " + "\n - ".join(soft_warnings))
@@ -307,11 +307,31 @@ class BuildingInference:
                        + "\nGaranta que modelo (.pth), pipeline (scalers) e FeatureEngineer estejam alinhados.")
                 raise RuntimeError(msg)
             else:
-                print("Artefatos compatíveis: modelo, scaler e features têm o mesmo INPUT_SIZE.")
+                print("Artefatos compatíveis: schema, nomes, ordem e dimensões coincidem.")
 
         except Exception as e:
             # Propaga erro para impedir uso inconsistente
             raise
+
+    def _validate_feature_vector(self, feature_vector: list) -> list:
+        """Reject any runtime feature vector that violates the saved contract."""
+        values = np.asarray(feature_vector, dtype=float)
+        if values.ndim != 1:
+            raise RuntimeError(
+                f"Vetor de features deve ser unidimensional; shape recebido={values.shape}."
+            )
+        contract = self.feature_pipeline.artifact_contract
+        if not contract:
+            raise RuntimeError("Pipeline carregada sem contrato semântico.")
+        expected_n = int(contract["input_size"])
+        if len(values) != expected_n:
+            raise RuntimeError(
+                "Tamanho do vetor de features incompatível com o artefato "
+                f"({len(values)} != {expected_n}); inferência cancelada."
+            )
+        if not np.isfinite(values).all():
+            raise RuntimeError("Vetor de features contém NaN ou infinito.")
+        return values.tolist()
     
     def predict_from_segments(self, segments: list) -> tuple[float, float, float, float | None]:
         """
@@ -336,22 +356,9 @@ class BuildingInference:
 
         column_polygons, beam_definitions = self.input_processor.process_segments(segments)
         feature_engineer = FeatureEngineer(column_polygons, beam_definitions)
-        feature_vector = feature_engineer.extract_features()
-
-        expected_n = getattr(self.feature_pipeline.scaler_X, 'n_features_in_', None)
-        if expected_n is not None and len(feature_vector) != expected_n:
-            if len(feature_vector) > expected_n:
-                import warnings
-                warnings.warn(
-                    f"FeatureEngineer returned {len(feature_vector)} features but scaler expects {expected_n}. "
-                    f"Truncating — retrain the model if FeatureEngineer was intentionally updated.",
-                    UserWarning, stacklevel=2
-                )
-                feature_vector = feature_vector[:expected_n]
-            else:
-                raise RuntimeError(
-                    f"Tamanho de features ({len(feature_vector)}) menor que o esperado pelo scaler ({expected_n})."
-                )
+        feature_vector = self._validate_feature_vector(
+            feature_engineer.extract_features()
+        )
 
         concreto_geom = get_geometric_concrete_volume(column_polygons, beam_definitions)
         formwork_area = calculate_column_formwork_area(column_polygons)
@@ -390,19 +397,9 @@ class BuildingInference:
         # 2. Processa geometria e extrai features
         column_polygons, beam_definitions = self.input_processor.process_segments(segments)
         feature_engineer = FeatureEngineer(column_polygons, beam_definitions)
-        feature_vector = feature_engineer.extract_features()
-        expected_n = getattr(self.feature_pipeline.scaler_X, 'n_features_in_', None)
-        if expected_n is not None and len(feature_vector) != expected_n:
-            if len(feature_vector) > expected_n:
-                import warnings
-                warnings.warn(
-                    f"FeatureEngineer returned {len(feature_vector)} features but scaler expects {expected_n}. "
-                    f"Truncating — retrain the model if FeatureEngineer was intentionally updated.",
-                    UserWarning, stacklevel=2
-                )
-                feature_vector = feature_vector[:expected_n]
-            else:
-                raise RuntimeError(f"Tamanho de features ({len(feature_vector)}) menor que o esperado pelo scaler ({expected_n}).")
+        feature_vector = self._validate_feature_vector(
+            feature_engineer.extract_features()
+        )
 
         # 2b. Concreto e área de forma geométricos exatos a partir da geometria
         concreto_geom = get_geometric_concrete_volume(column_polygons, beam_definitions)
@@ -461,21 +458,8 @@ class BuildingInference:
             # --- ETAPA 3: Predição com o Modelo Surrogate ---
             print("\n[PASSO 3/5] Executando predição com o modelo surrogate...")
             
-            # 3a. Ajustar tamanho das features para bater com o scaler, se necessário
-            expected_n = getattr(self.feature_pipeline.scaler_X, 'n_features_in_', None)
-            if expected_n is not None and len(feature_vector) != expected_n:
-                if len(feature_vector) > expected_n:
-                    import warnings
-                    warnings.warn(
-                        f"FeatureEngineer returned {len(feature_vector)} features but scaler expects {expected_n}. "
-                        f"Truncating — retrain the model if FeatureEngineer was intentionally updated.",
-                        UserWarning, stacklevel=2
-                    )
-                    feature_vector = feature_vector[:expected_n]
-                else:
-                    raise RuntimeError(
-                        f"Tamanho de features ({len(feature_vector)}) menor que o esperado pelo scaler ({expected_n})."
-                    )
+            # 3a. Validar o contrato exato antes de normalizar
+            feature_vector = self._validate_feature_vector(feature_vector)
 
             # 3b. Normalizar o vetor de features
             feature_vector_scaled = self.feature_pipeline.transform_features([feature_vector])
