@@ -38,7 +38,7 @@ O processo tem quatro fases principais:
 │  Gerar N variações geométricas → Analisar no TQS → Registrar saídas │
 ├─────────────────────────────────────────────────────────────────────┤
 │  FASE 2 — TREINAMENTO DO MODELO SUBSTITUTO                          │
-│  Extrair 21 features → Normalizar → Treinar DNN → Avaliar           │
+│  Extrair 23 features → Normalizar → Treinar DNN → Avaliar           │
 ├─────────────────────────────────────────────────────────────────────┤
 │  FASE 3 — OTIMIZAÇÃO                                                │
 │  Algoritmo Genético → Consultar DNN (ms) → Minimizar custo          │
@@ -303,7 +303,7 @@ Paralelamente ao rótulo regressivo (aço kgf), cada amostra recebe um rótulo b
 
 A extração de atributos (*features*) transforma a geometria bruta (polígonos e definições de vigas) em um vetor numérico que capture as propriedades estruturalmente relevantes para predição do consumo de aço. Features mal escolhidas podem tornar o modelo incapaz de distinguir edifícios estruturalmente diferentes; features redundantes aumentam a dimensionalidade sem ganho preditivo.
 
-O vetor de features tem **21 dimensões** no esquema v10, organizadas nos blocos funcionais descritos a seguir.
+O vetor de features tem **23 dimensões** no esquema v11, organizadas nos blocos funcionais descritos a seguir.
 
 ### 6.2 Bloco 1 — Estatísticas de Área de Pilares (4 features)
 
@@ -384,7 +384,7 @@ pilares sob a malha e as restrições geométricas atuais.
 
 **Justificativa:** A compacidade (`4πA/P²`) atinge máximo 1,0 para círculo e valores menores para seções alongadas. Para cada seção, ela satisfaz exatamente `compacidade = 4π/(P/√A)²`; por isso foi retirada do modelo no schema v8 e mantida em `FeatureEngineer.get_diagnostics()`. Os três resumos de perímetro também permanecem apenas nos diagnósticos.
 
-### 6.7 Bloco 6a — Distribuição Espacial com Referência Fixa (2 features)
+### 6.7 Bloco 6a — Distribuição Espacial com Referência Fixa (4 features)
 
 O centro de cargas e as dimensões da planta são entradas explícitas do edifício
 em `BuildingConfig`. Para o edifício atual:
@@ -403,12 +403,21 @@ dx_i = (x_i - x_carga) / largura_planta
 dy_i = (y_i - y_carga) / comprimento_planta
 ```
 
-As duas grandezas que variam no espaço de projeto entram no modelo:
+Quatro grandezas que variam no espaço de projeto entram no modelo:
 
 | Feature de treinamento | Fórmula / significado |
 |------------------------|-----------------------|
 | `column_area_spread_x_norm` | `Σ(A_i dx_i²) / ΣA_i` |
 | `column_area_spread_y_norm` | `Σ(A_i dy_i²) / ΣA_i` |
+| `columns_stiffness_spread_x_response_norm` | `Σ(Iyy_i dy_i²) / ΣIyy_i` |
+| `columns_stiffness_spread_y_response_norm` | `Σ(Ixx_i dx_i²) / ΣIxx_i` |
+
+Para uma translação em X, a rigidez à flexão do pilar é proporcional a `E Iyy`
+e o braço associado à resposta torcional está em Y; para uma translação em Y,
+a rigidez é proporcional a `E Ixx` e o braço está em X. Como o módulo de
+elasticidade e o pé-direito são comuns aos pilares deste edifício, eles se
+cancelam nas razões. Essas métricas são descritores geométricos da distribuição
+de rigidez e não substituem a análise global de vínculos realizada pelo TQS.
 
 As seis grandezas constantes pelas restrições de simetria são calculadas por
 `FeatureEngineer.get_spatial_diagnostics()`, mas não entram na rede:
@@ -499,11 +508,11 @@ substituídos no schema v10.
 Índices  [0-3]    Área de pilares (4)
          [4-9]    Vãos livres direcionais de vigas (6)
          [10-12]  Momentos de inércia (3)
-         [13-14]  Dispersão espacial de área em X e Y (2)
-         [15-16]  Fatores de forma das seções (2)
-         [17]     Balanço direcional dos raios de giração (1)
-         [18-20]  Descritores logarítmicos de orientação (3)
-         TOTAL: 21 features (schema v10)
+         [13-16]  Dispersão espacial de área e rigidez (4)
+         [17-18]  Fatores de forma das seções (2)
+         [19]     Balanço direcional dos raios de giração (1)
+         [20-22]  Descritores logarítmicos de orientação (3)
+         TOTAL: 23 features (schema v11)
 ```
 
 ---
@@ -556,15 +565,15 @@ Os escaladores são serializados com `joblib` para o arquivo `feature_pipeline.p
 
 ### 8.1 Tipo de Modelo
 
-**Rede Neural Profunda Densa (DNN — Deep Neural Network)**, implementada em PyTorch. O modelo é um regressor que mapeia o vetor de 21 features do esquema v10 (normalizado) para o consumo de aço normalizado (escalar).
+**Rede Neural Profunda Densa (DNN — Deep Neural Network)**, implementada em PyTorch. O modelo é um regressor que mapeia o vetor de 23 features do esquema v11 (normalizado) para o consumo de aço normalizado (escalar).
 
 ### 8.2 Arquitetura (classe `SimpleNN`)
 
 ```
-Entrada: x ∈ ℝ²¹ (normalizado)
+Entrada: x ∈ ℝ²³ (normalizado)
 
 Camada 1:
-  Linear(21 → 128)
+  Linear(23 → 128)
   BatchNorm1d(128)
   ReLU
   Dropout(p=0.2)
@@ -718,7 +727,7 @@ Cada execução de treinamento cria um diretório autocontido em `outputs/experi
 ├── metadata.json              # Métricas finais e metadados do experimento
 ├── metrics/
 │   ├── epochs.ndjson          # Métricas por época (loss, LR, gradientes)
-│   ├── feature_names.json     # Nomes das 21 features
+│   ├── feature_names.json     # Nomes das 23 features
 │   └── summary.json           # R², MAE, RMSE do teste
 └── plots/
     ├── learning_curves.png
@@ -750,7 +759,7 @@ Para penalizar automaticamente estas configurações, um **classificador binári
 ### 11.2 Treinamento do Classificador
 
 - **Modelo:** Regressão Logística (`sklearn.linear_model.LogisticRegression`, `class_weight='balanced'`, `max_iter=1000`), precedida por um `StandardScaler` no mesmo `Pipeline` (`sklearn.pipeline.make_pipeline`)
-- **Features:** vetor de 21 features, normalizado pelo `StandardScaler` interno do pipeline antes de entrar no classificador
+- **Features:** vetor de 23 features, normalizado pelo `StandardScaler` interno do pipeline antes de entrar no classificador
 - **Split:** 80/20 treino/teste, estratificado por classe (`train_test_split(..., stratify=y, test_size=0.2)`)
 - **Métricas avaliadas:** Acurácia, Precisão, Recall, F1-score, Matriz de Confusão, Curva ROC/AUC
 
@@ -941,7 +950,7 @@ main.py
 │       ├── TQSModelManager.create_building_model_and_elements()
 │       ├── RunModel(building_name) → TQS analisa estrutura
 │       ├── extract_material_summary(RESDES.HTM) → aço kgf, concreto m³
-│       ├── FeatureEngineer.extract_features() → vetor de 21 features
+│       ├── FeatureEngineer.extract_features() → vetor de 23 features
 │       └── Armazenar (features, aço, label_validade)
 │
 ├── 3. Treinamento do Modelo Substituto
@@ -983,7 +992,7 @@ main.py
 
 | Parâmetro | Valor |
 |---|---|
-| `INPUT_SIZE` | 21 |
+| `INPUT_SIZE` | 23 |
 | `HIDDEN_LAYERS` | [128, 128, 64] |
 | `DROPOUT_RATE` | 0,2 |
 | `OUTPUT_SIZE` | 1 |

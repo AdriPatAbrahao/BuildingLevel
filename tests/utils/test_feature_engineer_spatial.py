@@ -17,7 +17,7 @@ def _features_by_name(columns):
     engineer = FeatureEngineer(columns, [])
     values = engineer.extract_features()
     names = FeatureEngineer.feature_names()
-    assert len(values) == len(names) == 21
+    assert len(values) == len(names) == 23
     return dict(zip(names, values)), engineer.get_spatial_diagnostics()
 
 
@@ -175,6 +175,28 @@ def test_raw_aspect_summary_names_are_not_model_features():
     assert "mean_col_aspect_ratio" not in model_names
     assert "std_col_aspect_ratio" not in model_names
     assert "max_col_aspect_ratio" not in model_names
+
+
+def test_stiffness_spreads_distinguish_where_rotated_sections_are_located():
+    configuration_a = [
+        _rectangle(100.0, 410.0, 100.0, 20.0),
+        _rectangle(360.0, 100.0, 20.0, 100.0),
+    ]
+    configuration_b = [
+        _rectangle(100.0, 410.0, 20.0, 100.0),
+        _rectangle(360.0, 100.0, 100.0, 20.0),
+    ]
+    features_a, _ = _features_by_name(configuration_a)
+    features_b, _ = _features_by_name(configuration_b)
+    stiffness_names = {
+        "columns_stiffness_spread_x_response_norm",
+        "columns_stiffness_spread_y_response_norm",
+    }
+
+    for name in set(features_a) - stiffness_names:
+        assert features_a[name] == pytest.approx(features_b[name])
+    for name in stiffness_names:
+        assert features_b[name] > features_a[name]
 
 
 def test_mean_inertias_are_diagnostics_not_model_features():

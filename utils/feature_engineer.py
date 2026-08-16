@@ -24,14 +24,14 @@ class FeatureEngineer:
         """
         Computes all engineered features and returns them as a single vector.
 
-        Feature layout (21 total, schema v10):
+        Feature layout (23 total, schema v11):
           [0-3]   Non-redundant column area stats (4)
           [4-9]   Non-redundant clear-span stats separated into X and Y (6)
           [10-12] Inertia (sum_Ix, sum_Iy, ratio) (3)
-          [13-14] Fixed-reference area spread in X and Y (2)
-          [15-16] Section-shape factors (2)
-          [17]    Mean directional radius-of-gyration balance (1)
-          [18-20] Logarithmic directional aspect descriptors (3)
+          [13-16] Fixed-reference area and stiffness spreads (4)
+          [17-18] Section-shape factors (2)
+          [19]    Mean directional radius-of-gyration balance (1)
+          [20-22] Logarithmic directional aspect descriptors (3)
         """
         features = []
 
@@ -222,6 +222,16 @@ class FeatureEngineer:
                 float(np.sum(ixx_arr * dy)) / sum_Ixx if sum_Ixx > 0 else 0.0
             )
 
+            # Stiffness distribution relevant to torsional response. Translation
+            # in X uses Iyy with its perpendicular lever arm dy; translation in
+            # Y uses Ixx with its perpendicular lever arm dx.
+            stiffness_spread_x_response = (
+                float(np.sum(iyy_arr * dy**2)) / sum_Iyy if sum_Iyy > 0 else 0.0
+            )
+            stiffness_spread_y_response = (
+                float(np.sum(ixx_arr * dx**2)) / sum_Ixx if sum_Ixx > 0 else 0.0
+            )
+
             # These six quantities are structural diagnostics for the current
             # symmetry constraints. They are intentionally excluded from the
             # learning vector because they are constant over this design space.
@@ -300,9 +310,11 @@ class FeatureEngineer:
             )
 
             features.extend([
-                # --- variable fixed-reference spatial distribution (2) ---
+                # --- variable fixed-reference spatial distribution (4) ---
                 area_spread_x,
                 area_spread_y,
+                stiffness_spread_x_response,
+                stiffness_spread_y_response,
                 # --- dimensionless section-shape factors (2) ---
                 mean_shape_factor,
                 p95_shape_factor,
@@ -312,8 +324,8 @@ class FeatureEngineer:
                 mean_log_aspect, std_log_aspect, max_abs_log_aspect,
             ])
 
-        assert len(features) == 21, (
-            f"Feature count mismatch: expected 21, got {len(features)}. "
+        assert len(features) == 23, (
+            f"Feature count mismatch: expected 23, got {len(features)}. "
             "Update NeuralNetConfig.INPUT_SIZE and feature_names() if features were added/removed."
         )
         return features
@@ -351,9 +363,11 @@ class FeatureEngineer:
             "inertia_ratio_Iy_over_Ix",
         ]
         spatial = [
-            # Block 4 — variable fixed-reference spatial distribution (2)
+            # Block 4 — variable fixed-reference spatial distribution (4)
             "column_area_spread_x_norm",
             "column_area_spread_y_norm",
+            "columns_stiffness_spread_x_response_norm",
+            "columns_stiffness_spread_y_response_norm",
             # Block 5 — dimensionless section-shape factors P/sqrt(A) (2)
             "columns_mean_shape_factor",
             "columns_p95_shape_factor",
