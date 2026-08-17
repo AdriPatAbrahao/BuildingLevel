@@ -21,3 +21,26 @@ venv/
 
 # --- Outros artefatos locais ---
 *.tmp
+
+# --- Artefatos de pilotos/testes de validação (relatórios TQS, dumps de
+#     dados, figuras) — ficam no disco, não entram no controle de versão ---
+outputs/validation/**/*.htm
+outputs/validation/**/*.html
+outputs/validation/**/*.csv
+outputs/validation/**/*.json
+outputs/validation/**/*.pdf
+outputs/validation/**/*.log
+outputs/validation/**/*.npz
+outputs/validation/**/*.ndjson
+outputs/validation/**/*.tmp
+outputs/validation/**/*.txt
+outputs/validation/*.htm
+outputs/validation/*.html
+outputs/validation/*.csv
+outputs/validation/*.json
+outputs/validation/*.pdf
+outputs/validation/*.log
+outputs/validation/*.npz
+outputs/validation/*.ndjson
+outputs/validation/*.tmp
+outputs/validation/*.txt
