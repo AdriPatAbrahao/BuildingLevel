@@ -219,6 +219,12 @@ class BuildingOptimizer:
         self.generated_valid_configurations = [] # Stores List[Dict] for each valid config
         self._clf_features: List[List[float]] = []
         self._clf_labels: List[int] = []  # 1 = válido, 0 = inválido
+        # Only set during a live TQS collection (see lines ~1903/~1997);
+        # stay None on --train-from-checkpoint runs, where no TQS job ever
+        # executes in this process. The summary read-sites already treat
+        # None as "unavailable".
+        self._last_tqs_model_time: Optional[float] = None
+        self._last_tqs_exec_time: Optional[float] = None
         self._error_reader = TQSErrorReader()
         self.metrics_dir = self.exp_manager.get_metrics_dir()
         self.nn_manager.metrics_dir = self.metrics_dir
@@ -591,11 +597,15 @@ class BuildingOptimizer:
 
         # ── Start the pool and fill the sliding window ────────────────────────
         validity_check_dll = bool(getattr(ParallelConfig, "VALIDITY_CHECK_DLL", False))
+        allow_simultaneous_tqs = bool(
+            getattr(ParallelConfig, "ALLOW_SIMULTANEOUS_TQS", False)
+        )
         with TQSWorkerPool(
             num_workers=num_workers,
             base_name=base_name,
             timeout_sec=timeout_sec,
             validity_check_dll=validity_check_dll,
+            allow_simultaneous_tqs=allow_simultaneous_tqs,
         ) as pool:
             # Prime: one job per worker slot. Rejected candidates are replaced
             # immediately rather than ending collection with an empty queue.
@@ -609,7 +619,6 @@ class BuildingOptimizer:
 
                 try:
                     res = pool.get_result(timeout=float(timeout_sec) + 30)
-                    consec_timeouts = 0  # reset on any successful result
                 except Exception as wait_err:
                     consec_timeouts += 1
                     print(
@@ -632,6 +641,7 @@ class BuildingOptimizer:
                 )
 
                 if res.success:
+                    consec_timeouts = 0  # a completed TQS run reached this worker
                     if not (
                         math.isfinite(float(res.steel))
                         and math.isfinite(float(res.concrete))
@@ -684,7 +694,26 @@ class BuildingOptimizer:
                                 f"(steel={res.steel:.1f} kgf  concrete={res.concrete:.4f} m3)."
                             )
                 else:
-                    print(f"  [FAILED] Job #{res.job_id}: {res.error}")
+                    # A worker-level failure (TQS crash, RESDES.HTM never
+                    # produced, etc.) does NOT reset the streak — unlike a
+                    # queue-wait timeout, this also catches the case where a
+                    # timeout on ONE worker's job triggers the global
+                    # ``taskkill /IM NTQSHTM.EXE`` that kills every worker's
+                    # TQS process: the other in-flight jobs come back fast as
+                    # errors rather than as wait-timeouts, and must still
+                    # count toward the circuit breaker.
+                    consec_timeouts += 1
+                    print(
+                        f"  [FAILED] Job #{res.job_id} ({consec_timeouts}/"
+                        f"{max_consec_timeouts}): {res.error}"
+                    )
+                    if consec_timeouts >= max_consec_timeouts:
+                        print(
+                            "[Parallel] Too many consecutive job failures "
+                            "(possible global TQS kill affecting other "
+                            "workers). Stopping collection."
+                        )
+                        break
 
                 # Checkpoint
                 if getattr(RunConfig, "CHECKPOINTS_ENABLED", True):
@@ -756,47 +785,69 @@ class BuildingOptimizer:
         feature_vectors = []
         output_values = []
         processed_valid_configs_count = 0
+        seed_processed = False
         if getattr(RunConfig, 'CHECKPOINTS_ENABLED', True) and getattr(RunConfig, 'RESUME_FROM_CHECKPOINT', False):
             ck = self._load_checkpoint()
             if ck:
-                feature_vectors = ck.get('feature_vectors', [])
-                output_values = ck.get('output_values', [])
-                processed_valid_configs_count = int(ck.get('valid_count', 0))
-                self.current_iteration = int(ck.get('current_iteration', 0))
+                if int(ck.get('checkpoint_version', 1)) < 2:
+                    raise RuntimeError(
+                        "Legacy checkpoint does not contain classifier state; "
+                        "sequential resume aborted."
+                    )
+                (
+                    feature_vectors,
+                    output_values,
+                    processed_valid_configs_count,
+                    self.current_iteration,
+                    seed_processed,
+                ) = self._restore_collection_state(ck)
                 print("Resuming from checkpoint.")
         # Calculate max attempts to prevent infinite loops if analysis consistently fails
         max_iterations = self.num_target_samples * RunConfig.MAX_ITERATION_FACTOR
 
         # --- Analyze Initial Configuration ---
-        print(f"\nAnalyzing Initial Configuration (Attempt 0)...")
-        analysis_start_time = time.time()
-        steel, concrete, column_polygons, beam_definitions, is_valid = self._get_analysis_results(initial_segments)
-        analysis_end_time = time.time()
-        print(f"Initial analysis took {analysis_end_time - analysis_start_time:.2f}s")
+        # A checkpointed run has already scored the seed once; re-running it
+        # here would append a duplicate seed row to both the regression and
+        # classifier data every time collection resumes (see the equivalent
+        # ``seed_processed`` guard in ``_collect_training_data_parallel``).
+        if not seed_processed:
+            print(f"\nAnalyzing Initial Configuration (Attempt 0)...")
+            analysis_start_time = time.time()
+            steel, concrete, column_polygons, beam_definitions, is_valid = self._get_analysis_results(initial_segments)
+            analysis_end_time = time.time()
+            print(f"Initial analysis took {analysis_end_time - analysis_start_time:.2f}s")
 
-        if concrete is not None: # Check if analysis (TQS or geometric) was successful
-            print(f"Initial Results -> Steel: {steel if steel is not None else 'N/A'} kgf, Concrete: {concrete:.4f} mÂ³")
-            feature_vector = self._extract_feature_vector(column_polygons, beam_definitions)
-            # Em _collect_training_data, logo apÃ³s extrair o feature_vector da amostra inicial
-            
-            print(f"[DEBUG MAIN] Vetor de Features da Semente: {np.array(feature_vector)}")
+            if concrete is not None: # Check if analysis (TQS or geometric) was successful
+                print(f"Initial Results -> Steel: {steel if steel is not None else 'N/A'} kgf, Concrete: {concrete:.4f} mÂ³")
+                feature_vector = self._extract_feature_vector(column_polygons, beam_definitions)
+                # Em _collect_training_data, logo apÃ³s extrair o feature_vector da amostra inicial
 
-            # Rótulo de validade para classificador
-            self._clf_features.append(feature_vector)
-            self._clf_labels.append(1 if is_valid else 0)
-            # Apenas amostras válidas entram no treino de aço
-            if is_valid:
-                feature_vectors.append(feature_vector)
-                if steel is None:
-                    raise RuntimeError("Steel is None. For steel-only training, use TQS mode (RunConfig.USE_GEOMETRIC_ESTIMATE=False).")
-                output_values.append([steel])
-                if self.use_vector_input:
-                    self.generated_valid_configurations.append(copy.deepcopy(initial_segments))
-                processed_valid_configs_count += 1
-        else:
-            # If the very first configuration fails, it's critical.
-            print("CRITICAL: Initial configuration failed analysis. Check input data, TQS setup, or geometric calculation logic.")
-            raise RuntimeError("Initial configuration analysis failed. Cannot proceed.")
+                print(f"[DEBUG MAIN] Vetor de Features da Semente: {np.array(feature_vector)}")
+
+                # Rótulo de validade para classificador
+                self._clf_features.append(feature_vector)
+                self._clf_labels.append(1 if is_valid else 0)
+                # Apenas amostras válidas entram no treino de aço
+                if is_valid:
+                    feature_vectors.append(feature_vector)
+                    if steel is None:
+                        raise RuntimeError("Steel is None. For steel-only training, use TQS mode (RunConfig.USE_GEOMETRIC_ESTIMATE=False).")
+                    output_values.append([steel])
+                    if self.use_vector_input:
+                        self.generated_valid_configurations.append(copy.deepcopy(initial_segments))
+                    processed_valid_configs_count += 1
+            else:
+                # If the very first configuration fails, it's critical.
+                print("CRITICAL: Initial configuration failed analysis. Check input data, TQS setup, or geometric calculation logic.")
+                raise RuntimeError("Initial configuration analysis failed. Cannot proceed.")
+            seed_processed = True
+            if getattr(RunConfig, "CHECKPOINTS_ENABLED", True):
+                self._save_checkpoint(
+                    feature_vectors,
+                    output_values,
+                    processed_valid_configs_count,
+                    seed_processed=True,
+                )
 
         # --- Generate and Analyze Subsequent Configurations ---
         print(f"\n--- Starting Generation Loop (Target: {self.num_target_samples} valid samples) ---")
@@ -837,27 +888,33 @@ class BuildingOptimizer:
 
             # 3. Process results
             if concrete is not None: # Check if analysis was successful
-                processed_valid_configs_count += 1 # Increment valid sample count
-                print(f"Config {self.current_iteration} Results (Valid Sample {processed_valid_configs_count}) -> Steel: {steel if steel is not None else 'N/A'} kgf, Concrete: {concrete:.4f} mÂ³")
                 feature_vector = self._extract_feature_vector(column_polygons, beam_definitions)
                 # Ensure feature vector extraction was successful
                 if feature_vector:
-                     # Rótulo para classificador (válida/inválida)
+                     # Rótulo para classificador (válida/inválida) — both valid
+                     # and invalid designs are real classifier training data.
                      self._clf_features.append(feature_vector)
                      self._clf_labels.append(1 if is_valid else 0)
-                     # Apenas válidas no treino de aço
+                     # Only a genuinely valid design counts toward the target
+                     # and enters the steel-regression set — counting every
+                     # technically-successful TQS run here (valid or not)
+                     # would stop the loop early and write a wrong
+                     # ``valid_count`` to the checkpoint.
                      if is_valid:
+                         processed_valid_configs_count += 1
                          feature_vectors.append(feature_vector)
                          if steel is None:
                              raise RuntimeError("Steel is None. For steel-only training, use TQS mode (RunConfig.USE_GEOMETRIC_ESTIMATE=False).")
                          output_values.append([steel])
                          if self.use_vector_input:
                              self.generated_valid_configurations.append(copy.deepcopy(new_segments))
+                         print(f"Config {self.current_iteration} Results (Valid Sample {processed_valid_configs_count}) -> Steel: {steel if steel is not None else 'N/A'} kgf, Concrete: {concrete:.4f} mÂ³")
                          # Optional: Update base segments if varying from last success
                          # base_segments_for_variation = new_segments
+                     else:
+                         print(f"Config {self.current_iteration} rejected (invalid design) -> Steel: {steel if steel is not None else 'N/A'} kgf, Concrete: {concrete:.4f} mÂ³")
                 else:
-                     print(f"Warning: Failed to extract feature vector for valid config {self.current_iteration}. Skipping sample.")
-                     processed_valid_configs_count -= 1 # Decrement count as it's not fully usable
+                     print(f"Warning: Failed to extract feature vector for config {self.current_iteration}. Skipping sample.")
             else:
                 print(f"Config {self.current_iteration} failed analysis. Skipping sample.")
             if getattr(RunConfig, 'CHECKPOINTS_ENABLED', True):
@@ -878,6 +935,15 @@ class BuildingOptimizer:
              print("Consider increasing NUM_SAMPLES or MAX_ITERATION_FACTOR if analysis fails often, or check analysis logs.")
         else:
              print(f"Successfully generated {processed_valid_configs_count} valid samples.")
+
+        if getattr(RunConfig, "CHECKPOINTS_ENABLED", True):
+            self._save_checkpoint(
+                feature_vectors,
+                output_values,
+                processed_valid_configs_count,
+                seed_processed=True,
+                collection_complete=processed_valid_configs_count >= self.num_target_samples,
+            )
 
         return feature_vectors, output_values
 
@@ -1218,7 +1284,7 @@ class BuildingOptimizer:
             from sklearn.linear_model import LogisticRegression
             from sklearn.pipeline import make_pipeline
             from sklearn.preprocessing import StandardScaler
-            import joblib, json
+            import joblib
             if len(self._clf_features) > 0 and len(self._clf_labels) > 0:
                 n_classes = len(set(self._clf_labels))
                 if n_classes < 2:

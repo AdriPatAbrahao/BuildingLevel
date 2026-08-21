@@ -1632,19 +1632,23 @@ class OptimizationDiagnosticsPlotter:
             bars = ax.bar(labels, [s_val, t_val],
                           color=[_PRIMARY, _DANGER], edgecolor="white", width=0.5)
             err_pct = abs(s_val - t_val) / t_val * 100 if t_val else 0
+            upper_limit = max(s_val, t_val) * 1.28 if max(s_val, t_val) else 1.0
+            ax.set_ylim(0, upper_limit)
             for bar, val in zip(bars, [s_val, t_val]):
                 ax.text(bar.get_x() + bar.get_width() / 2,
                         bar.get_height() * 1.01,
                         f"{val:,.1f}", ha="center", va="bottom", fontsize=_FONT_SIZE)
             ax.set_title(title)
+            error_label = f"{err_pct:.2f}%" if err_pct < 1.0 else f"{err_pct:.1f}%"
             ax.text(
                 0.5,
-                0.95,
-                f"Relative error: {err_pct:.1f}%",
+                0.975,
+                f"Relative error: {error_label}",
                 transform=ax.transAxes,
                 ha="center",
                 va="top",
                 fontsize=_FONT_SIZE - 1,
+                bbox={"facecolor": "white", "edgecolor": "none", "pad": 1.5},
             )
             ax.set_ylabel(title)
             ax.spines["top"].set_visible(False)

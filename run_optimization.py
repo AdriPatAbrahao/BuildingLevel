@@ -26,19 +26,18 @@ def main():
         # --- ETAPA 1: Carregar os componentes necessários ---
         print("\n[PASSO 1/4] Carregando modelo substituto e espaço de busca...")
         
-        # Carrega o modelo treinado e a pipeline de features
-        inference_runner = BuildingInference()
-        
-        # Carrega a definição do espaço de busca a partir do CSV semente
-        # Preferir Building1c.csv, se disponível
-        from config import paths
-        seed_candidate = paths.DATA_DIR / "Building1c.csv"
-        if seed_candidate.exists():
-            print(f"   - Usando CSV semente: '{seed_candidate}'")
-            design_space = DesignSpace(seed_csv_path=seed_candidate)
-        else:
-            print("   - 'Building1c.csv' não encontrado. Usando CSV padrão em config.paths.SEED_VECTOR_CSV.")
-            design_space = DesignSpace()
+        # Carrega o modelo treinado e a pipeline de features do experimento
+        # atual (o mesmo checkpoint/CSV semente usados para coletar os dados
+        # de treino) — evita usar um experimento antigo incompatível.
+        inference_runner = BuildingInference(
+            experiment_id="20260815-213341_Coleta_com_230_amostras"
+        )
+
+        # Espaço de busca a partir do MESMO CSV semente usado na coleta/treino
+        # (config.paths.SEED_VECTOR_CSV_OPTIMIZATION == BuildingInput.csv).
+        # Usar um CSV semente diferente (ex.: Building1c.csv) desalinha a
+        # geometria de busca da geometria em que o modelo foi treinado.
+        design_space = DesignSpace()
 
         # --- ETAPA 2: Configurar a função objetivo ---
         print("\n[PASSO 2/4] Configurando a função objetivo (custo)...")
@@ -56,7 +55,7 @@ def main():
             "cost_concrete_rs": seed_metrics_raw.get("cost_concrete_rs"),
             "cost_form_rs":     seed_metrics_raw.get("cost_form_rs"),
         }
-        print(f"   Seed → custo: R$ {seed_metrics['cost']:,.2f} | "
+        print(f"   Seed -> custo: R$ {seed_metrics['cost']:,.2f} | "
               f"aço: {seed_metrics['steel']:.1f} kgf | "
               f"concreto: {seed_metrics['concrete']:.3f} m³ | "
               f"forma: {seed_metrics['form_area']:.2f} m²")

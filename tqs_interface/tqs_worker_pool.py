@@ -89,6 +89,28 @@ class WorkerResult:
         return self.error is None and self.steel is not None
 
 
+def _safe_writef(TQSUtil, text: str) -> None:
+    """Log to the TQS message window without ever letting the call crash
+    the worker subprocess.
+
+    ``TQSUtil.writef`` encodes with the legacy ``latin-1`` charset. Messages
+    built from exception text (COM errors, our own ``TimeoutError`` strings,
+    etc.) can contain characters outside that range — e.g. an em dash — and
+    raise ``UnicodeEncodeError`` from inside the ``except`` block that was
+    trying to report a failure. That turns one recoverable job failure into
+    an uncaught crash that kills the whole worker process, permanently
+    losing that slot for the rest of the collection run.
+    """
+    try:
+        TQSUtil.writef(text)
+    except Exception:
+        try:
+            sanitized = text.encode("latin-1", errors="replace").decode("latin-1")
+            TQSUtil.writef(sanitized)
+        except Exception:
+            print(f"[writef fallback] {text}")
+
+
 def _evaluate_structural_validity(
     error_reader,
     slot_name: str,
@@ -171,7 +193,7 @@ def _run_model_with_timeout(
         t.join(timeout=10.0)           # give the thread time to unblock
         raise TimeoutError(
             f"RunModel did not complete within {timeout_sec}s "
-            f"for slot '{slot_name}' — TQS process killed."
+            f"for slot '{slot_name}' - TQS process killed."
         )
 
     if exc_holder[0] is not None:
@@ -249,24 +271,26 @@ def _worker_main(
     manager      = TQSModelManager(building_name=slot_name)
     error_reader = TQSErrorReader()
 
-    TQSUtil.writef(
+    _safe_writef(
+        TQSUtil,
         f"[{slot_name}] Worker ready "
-        f"(PID={pid}, slot_dir={_tqs_base / slot_name})."
+        f"(PID={pid}, slot_dir={_tqs_base / slot_name}).",
     )
 
     while True:
         job = job_q.get()          # blocks until a job or poison-pill arrives
 
         if job is None:
-            TQSUtil.writef(f"[{slot_name}] Shutdown signal - exiting.")
+            _safe_writef(TQSUtil, f"[{slot_name}] Shutdown signal - exiting.")
             break
 
         job_id, column_polygons, beam_definitions = job
         t0 = time.perf_counter()
 
-        TQSUtil.writef(
+        _safe_writef(
+            TQSUtil,
             f"[{slot_name}] >> Job #{job_id} - "
-            f"{len(column_polygons)} col(s), {len(beam_definitions)} beam(s)."
+            f"{len(column_polygons)} col(s), {len(beam_definitions)} beam(s).",
         )
 
         try:
@@ -298,8 +322,8 @@ def _worker_main(
             else:
                 run_model = RunModel
             _run_model_with_timeout(run_model, slot_name, timeout_sec)
-            TQSUtil.writef(
-                f"[{slot_name}] RunModel issued for job #{job_id}."
+            _safe_writef(
+                TQSUtil, f"[{slot_name}] RunModel issued for job #{job_id}."
             )
 
             # ── 4. Wait for and read the results file ─────────────────────
@@ -341,15 +365,17 @@ def _worker_main(
                 required=validity_check_dll,
             )
             if not is_valid:
-                TQSUtil.writef(
-                    f"[{slot_name}] Job #{job_id}: critical error(s) -> invalid."
+                _safe_writef(
+                    TQSUtil,
+                    f"[{slot_name}] Job #{job_id}: critical error(s) -> invalid.",
                 )
 
             elapsed = time.perf_counter() - t0
-            TQSUtil.writef(
+            _safe_writef(
+                TQSUtil,
                 f"[{slot_name}] OK Job #{job_id} in {elapsed:.1f}s - "
                 f"aco={steel:.1f} kgf  concreto={concrete:.4f} m3  "
-                f"valido={is_valid}"
+                f"valido={is_valid}",
             )
             result_q.put(
                 WorkerResult(
@@ -363,9 +389,10 @@ def _worker_main(
         except Exception as exc:
             elapsed  = time.perf_counter() - t0
             err_text = f"{exc}\n{traceback.format_exc()}"
-            TQSUtil.writef(
+            _safe_writef(
+                TQSUtil,
                 f"[{slot_name}] FAILED Job #{job_id} "
-                f"after {elapsed:.1f}s: {err_text}"
+                f"after {elapsed:.1f}s: {err_text}",
             )
             result_q.put(
                 WorkerResult(

@@ -91,27 +91,53 @@ class ParallelConfig:
 
     Tuning guidelines
     -----------------
-    * ``NUM_WORKERS``: keep at 1 while TQS process cleanup targets the global
-      ``NTQSHTM.EXE`` image name. More workers require PID-isolated cleanup and
-      enough TQS licence seats; otherwise one slot can terminate another.
+    * ``NUM_WORKERS``: the 2026-08-16 concurrency pilot validated 2 workers on
+      6 comparison cases (1.67x speedup, zero result divergence —
+      ``outputs/validation/tqs_concurrency_pilot/summary.json``), but two
+      real production canary runs on 2026-08-17 (``--num-samples 260`` off
+      the 230-sample checkpoint) showed real instability under actual load:
+      successful jobs took 143-151s vs. the pilot's steady-state 62-67s, and
+      3 consecutive jobs then hung to the full 180s timeout each. This
+      happened even after re-provisioning ``TrainBuild815_02`` cleanly via
+      TQS's own ``SaveAs`` (ruling out a bad manual duplication) and after a
+      TQS modal dialog (``TCZOFEXZ.EXE ... executável não existe``) suggested
+      the two simultaneous engine instances may race over the *shared*
+      ``T:\\TQSW\\EXEC\\X64`` executable directory — unlike the per-slot
+      building directories, that path is NOT isolated per worker. Reverted
+      to 1 worker for the real 2500-sample collection; do not raise this
+      again without resolving that shared-executable-directory risk first.
+    * ``ALLOW_SIMULTANEOUS_TQS``: required whenever ``NUM_WORKERS > 1`` —
+      ``TQSWorkerPool`` raises otherwise. Disables each worker's own
+      pre-run global ``NTQSHTM.EXE`` termination so workers don't kill each
+      other's in-flight process. A *timeout* still kills ``NTQSHTM.EXE`` by
+      image name globally (there is no PID-isolated kill yet), so every
+      in-flight job can be lost when one worker hangs — this is why
+      ``MAX_CONSECUTIVE_TIMEOUTS`` also counts worker-level job failures,
+      not just queue-wait timeouts. Keep ``False`` at ``NUM_WORKERS = 1`` so
+      the single worker keeps its normal pre-run cleanup of stray
+      ``NTQSHTM.EXE`` processes.
+    * Each slot directory (``{BASE_NAME}_01``, ``_02``, …) must already exist
+      as a TQS building duplicated from the same validated seed model before
+      raising ``NUM_WORKERS`` — TQSWorkerPool does not create slots itself.
     * ``BASE_NAME``: slots are ``{BASE_NAME}_01``, ``_02``, … — the ``_NN``
       suffix keeps them distinct from ``BuildingConfig.NAME`` (no suffix).
     * ``TIMEOUT_SEC``: increase for very large buildings or slow machines.
     """
-    ENABLED           = True           # pool isolado; iniciar com um worker validado
-    NUM_WORKERS       = 1              # relevante apenas quando ENABLED=True
-    BASE_NAME         = "TrainBuild815"  # fresh validated slot: TrainBuild815_01
+    ENABLED           = False          # 2026-08-17: temporariamente sequencial p/ testar OptimizedBuilding como controle
+    NUM_WORKERS       = 1              # 2 workers revertido em 2026-08-17: instável em produção real, ver acima
+    ALLOW_SIMULTANEOUS_TQS = False     # só True ao validar NUM_WORKERS>1 de novo
+    BASE_NAME         = "TrainBuild815"  # slots: TrainBuild815_01, TrainBuild815_02, ...
     TIMEOUT_SEC       = 180            # per-job RESDES.HTM wait timeout (seconds)
-    MAX_CONSECUTIVE_TIMEOUTS = 3       # stop collection only after this many timeouts in a row
+    MAX_CONSECUTIVE_TIMEOUTS = 3       # stop collection after this many consecutive timeouts/failures
     # Required for collection: unavailable/failed DLL checks reject the sample.
     VALIDITY_CHECK_DLL = True
 
 
 class ObjectiveConfig:
     """Parameters used by the optimization objective function."""
-    CONCRETE_PRICE_M3 = 10.0
-    STEEL_PRICE_KG = 100.0
-    FORM_PRICE_M2 = 10.0  # R$/m² — custo de forma (fôrma) dos pilares; AJUSTAR para o valor real de mercado
+    CONCRETE_PRICE_M3 = 450.0
+    STEEL_PRICE_KG = 12.0
+    FORM_PRICE_M2 = 70.0  # R$/m² — custo de forma (fôrma) dos pilares
     # Constructive discretization shared by data generation and optimization.
     LENGTH_STEP_CM = 5.0
     INVALID_PROB_THRESHOLD = 0.5

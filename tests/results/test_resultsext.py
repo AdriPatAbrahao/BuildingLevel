@@ -1,4 +1,7 @@
-from results.resultsext import extract_material_summary
+from results.resultsext import (
+    extract_material_breakdown,
+    extract_material_summary,
+)
 
 
 def _report_html(headers, totals):
@@ -53,3 +56,35 @@ def test_incompatible_table_returns_empty_summary(tmp_path):
     )
 
     assert extract_material_summary(report) == (None, None)
+
+
+def test_extracts_element_material_breakdown(tmp_path):
+    report = tmp_path / "RESDES.HTM"
+    report.write_text(
+        _report_html(
+            ["Elemento", "Aço", "Concreto", "Forma", "fck"],
+            ["Totais", "238", "11.18", "114.36", "-"],
+        ).replace(
+            "<tr><td>Totais</td><td>238</td><td>11.18</td>"
+            "<td>114.36</td><td>-</td></tr>",
+            "<tr><td>Pilares</td><td>238</td><td>1.86</td>"
+            "<td>29.40</td><td>25</td></tr>"
+            "<tr><td>Totais</td><td>238</td><td>11.18</td>"
+            "<td>114.36</td><td>-</td></tr>",
+        ),
+        encoding="utf-8",
+    )
+
+    result = extract_material_breakdown(report)
+
+    assert result["columns"] == {
+        "steel_kgf": "238",
+        "concrete_m3": "1.86",
+        "formwork_m2": "29.40",
+        "fck_mpa": "25",
+    }
+    assert result["total"] == {
+        "steel_kgf": "238",
+        "concrete_m3": "11.18",
+        "formwork_m2": "114.36",
+    }

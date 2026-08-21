@@ -186,8 +186,11 @@ class GeneticOptimizer:
             print(f"Custo Atual: R$ {gen_best_cost:,.2f}")
             if prev_best_cost is not None:
                 delta = gen_best_cost - prev_best_cost
-                flag = "▲" if delta < 0 else ("=" if delta == 0 else "▼")
-                print(f"Comparação vs anterior: {flag} ΔR$ {abs(delta):,.2f}")
+                # Plain-ASCII wording — Windows consoles using the cp1252
+                # code page cannot encode arrow/delta glyphs and this print
+                # would crash the optimizer mid-run.
+                flag = "melhora" if delta < 0 else ("=" if delta == 0 else "piora")
+                print(f"Comparação vs anterior: {flag} (Delta R$ {abs(delta):,.2f})")
             print("Steel (kg):", f"{gen_metrics['steel']:.2f}")
             print("Forma (m²):", f"{gen_metrics.get('form_area', 0.0):.2f}")
             print("Validade (prob_invalid):", f"{gen_metrics['prob_invalid'] if gen_metrics['prob_invalid'] is not None else 'N/A'}")

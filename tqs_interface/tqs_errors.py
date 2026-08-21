@@ -1,7 +1,7 @@
 import os
 import ctypes
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Sequence, Tuple
 from config.settings import BuildingConfig
 from config.paths import TQS_OUTPUT_DIR
 
@@ -48,7 +48,10 @@ class TQSErrorReader:
         return self._ngererro is not None and self._nmsgerro is not None
 
     def get_critical_errors(
-        self, building_name: str = None, strict: bool = False
+        self,
+        building_name: str = None,
+        strict: bool = False,
+        target_scopes: Sequence[str] | None = None,
     ) -> List[ErrorData]:
         """
         Collect critical errors (classification==2) from three project folders.
@@ -59,6 +62,12 @@ class TQSErrorReader:
             Building slot to inspect.  Defaults to ``BuildingConfig.NAME``.
             Pass an explicit name when reading errors for a worker slot
             (e.g. ``"OptimBuilding_02"``).
+        target_scopes : sequence[str], optional
+            Subsystems to inspect. Supported values are ``"VIGAS"``,
+            ``"PILAR"`` and ``"ESPACIAL"``. When omitted, all three are read
+            for backward compatibility. A pillar-only final verification can
+            pass ``("PILAR",)`` so intentionally absent beam-design files do
+            not invalidate the check.
 
         Returns
         -------
@@ -66,11 +75,29 @@ class TQSErrorReader:
             Unique elements with critical errors across VIGAS, PILAR, ESPACIAL.
         """
         _name = building_name if building_name else BuildingConfig.NAME
-        targets = [
-            os.path.join(str(TQS_OUTPUT_DIR), _name, "Tipo", "VIGAS"),
-            os.path.join(str(TQS_OUTPUT_DIR), _name, "PILAR"),
-            os.path.join(str(TQS_OUTPUT_DIR), _name, "ESPACIAL"),
-        ]
+        target_map = {
+            "VIGAS": os.path.join(
+                str(TQS_OUTPUT_DIR), _name, "Tipo", "VIGAS"
+            ),
+            "PILAR": os.path.join(str(TQS_OUTPUT_DIR), _name, "PILAR"),
+            "ESPACIAL": os.path.join(str(TQS_OUTPUT_DIR), _name, "ESPACIAL"),
+        }
+        scopes = tuple(
+            str(scope).strip().upper()
+            for scope in (
+                target_scopes
+                if target_scopes is not None
+                else ("VIGAS", "PILAR", "ESPACIAL")
+            )
+        )
+        unsupported = [scope for scope in scopes if scope not in target_map]
+        if unsupported:
+            raise ValueError(
+                "Unsupported TQS error scope(s): " + ", ".join(unsupported)
+            )
+        if not scopes:
+            raise ValueError("At least one TQS error scope must be selected.")
+        targets = [target_map[scope] for scope in scopes]
 
         collected: List[Tuple[int, str]] = []
 
@@ -188,7 +215,8 @@ class TQSErrorReader:
 
         if strict and visited_targets == 0:
             raise RuntimeError(
-                f"No TQS error folders were found for building '{_name}'."
+                f"No selected TQS error folders were found for building "
+                f"'{_name}' (scopes: {', '.join(scopes)})."
             )
 
         # Deduplicate

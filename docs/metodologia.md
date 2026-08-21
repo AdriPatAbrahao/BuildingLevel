@@ -269,10 +269,25 @@ O sistema suporta dois modos:
 **Modo paralelo** (`ParallelConfig.ENABLED = True`):
 - `NUM_WORKERS` subprocessos, cada um com diretório isolado (`TrainBuild815_01`, `_02`, ...)
 - Janela deslizante: novos jobs são submetidos à medida que resultados chegam
-- Configuração validada atual: um worker no slot `TrainBuild815_01`
-- O número de workers deve permanecer em 1 enquanto a limpeza/recuperação
-  encerrar `NTQSHTM.EXE` pelo nome global do processo; aumentar esse valor pode
-  fazer um worker interromper a análise de outro
+- Configuração validada atual: **um worker** (`NUM_WORKERS = 1`,
+  `ALLOW_SIMULTANEOUS_TQS = False`). O piloto de concorrência (§ abaixo)
+  aprovou dois workers em 6 casos de comparação (ganho de 1,67x), mas duas
+  tentativas reais de produção em 2026-08-17 (lote de 30 amostras a partir do
+  checkpoint de 230) mostraram instabilidade sob carga real: jobs que tiveram
+  sucesso levaram 143-151s (vs. 62-67s em regime do piloto), e três jobs
+  seguidos travaram no timeout de 180s — mesmo após reprovisionar
+  `TrainBuild815_02` via `SaveAs` nativo do TQS (descartando duplicação manual
+  malfeita). Um diálogo modal do TQS (`TCZOFEXZ.EXE ... executável não
+  existe`) sugere que as duas instâncias simultâneas podem disputar o
+  diretório de executáveis compartilhado `T:\TQSW\EXEC\X64` — ao contrário
+  dos diretórios de edifício por slot, esse caminho não é isolado por worker.
+  Revertido para um worker até esse risco ser investigado e resolvido.
+- Um timeout ainda encerra `NTQSHTM.EXE` pelo nome global do processo, o que
+  pode interromper a análise de outro worker que esteja em andamento; por
+  isso `MAX_CONSECUTIVE_TIMEOUTS` conta tanto timeouts de fila quanto falhas
+  de job (`WorkerResult.error`), não apenas o primeiro caso — validado nos
+  testes reais de 2026-08-17 (disjuntor parou a coleta corretamente após 3
+  falhas consecutivas, sem corromper o checkpoint)
 - O checkpoint v3 preserva regressão, classificador, configurações válidas,
   hashes de deduplicação, estado do gerador aleatório e hash do CSV semente,
   com escrita atômica a cada 10 minutos
