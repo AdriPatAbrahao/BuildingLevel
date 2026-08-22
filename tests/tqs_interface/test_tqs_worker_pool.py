@@ -4,6 +4,7 @@ from tqs_interface.tqs_worker_pool import (
     TQSWorkerPool,
     _evaluate_structural_validity,
     _safe_writef,
+    _terminate_worker_child_trees,
 )
 
 
@@ -94,3 +95,28 @@ def test_safe_writef_passes_plain_text_through_unchanged():
     _safe_writef(tqs_util, "plain ascii message")
 
     assert tqs_util.received == ["plain ascii message"]
+
+
+def test_timeout_cleanup_targets_only_worker_children(monkeypatch):
+    calls = []
+
+    class Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return Result()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    _terminate_worker_child_trees(12345)
+
+    command, kwargs = calls[0]
+    script = command[-1]
+    assert command[0] == "powershell.exe"
+    assert "$rootPid = 12345" in script
+    assert "ParentProcessId -eq $rootPid" in script
+    assert "taskkill.exe /F /T /PID $child.ProcessId" in script
+    assert "/IM" not in script
+    assert kwargs["timeout"] == 20
