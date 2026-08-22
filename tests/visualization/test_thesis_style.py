@@ -65,6 +65,8 @@ def test_error_histogram_legend_is_opaque_and_reference_lines_are_clipped(
         "Zero residual",
         "Mean residual",
     ]
+    assert any("overpredicted" in text.get_text() for text in fig.axes[1].texts)
+    assert not any("underpredicted" in text.get_text() for text in fig.axes[1].texts)
     real_close(fig)
 
 
@@ -98,7 +100,7 @@ def test_error_histogram_combines_mean_and_zero_when_visually_coincident(
     real_close(fig)
 
 
-def test_scatter_metrics_and_legend_use_opposite_corners(
+def test_scatter_metrics_and_legend_do_not_cover_data(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -118,5 +120,12 @@ def test_scatter_metrics_and_legend_use_opposite_corners(
     assert metrics_text.get_position() == (0.03, 0.97)
     assert metrics_text.get_horizontalalignment() == "left"
     assert metrics_text.get_verticalalignment() == "top"
-    assert scatter_axis.get_legend()._loc == 4  # lower right
+    assert scatter_axis.get_legend() is None
+    assert len(fig.legends) == 1
+    assert [text.get_text() for text in fig.legends[0].get_texts()] == [
+        "Test samples",
+        "1:1 reference line",
+        "±10% error band",
+    ]
+    assert "Predicted (MLP)" in scatter_axis.get_ylabel()
     real_close(fig)
