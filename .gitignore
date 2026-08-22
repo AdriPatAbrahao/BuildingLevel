@@ -6,6 +6,15 @@ __pycache__/
 # --- Resultados de treino/experimentos (gerados localmente, não versionados) ---
 outputs/experiments/
 outputs/results/
+outputs/targeted_collections/
+outputs/retraining_preparations/
+outputs/retraining_studies/
+outputs/optimization_runs/
+outputs/optimization_verifications/
+outputs/reference_verifications/
+outputs/optimization_robustness/
+outputs/reproducibility_snapshots/
+outputs/model_robustness/
 
 # --- Notas/documentos internos de planejamento (Trae IDE) ---
 .trae/
